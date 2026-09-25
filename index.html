@@ -32,7 +32,6 @@
     overflow-x:hidden;
   }
 
-  /* ---- header / instrument bar ---- */
   header{
     padding:28px 24px 18px;
     display:flex;
@@ -97,7 +96,6 @@
   }
   .gear:hover{ border-color:var(--brass-dim); color:var(--brass); }
 
-  /* ---- chat feed ---- */
   main{
     flex:1;
     width:100%;
@@ -146,7 +144,6 @@
   main::-webkit-scrollbar{ width:6px; }
   main::-webkit-scrollbar-thumb{ background:var(--line); border-radius:3px; }
 
-  /* ---- input dock ---- */
   .dock{
     position:fixed;
     bottom:0; left:0; right:0;
@@ -202,7 +199,6 @@
     color:var(--brass);
   }
 
-  /* ---- settings modal ---- */
   .overlay{
     position:fixed; inset:0;
     background:rgba(8,10,13,.72);
@@ -364,6 +360,8 @@
   </div>
 </div>
 
+<audio id="ttsAudio" style="display:none;"></audio>
+
 <script>
 const feed = document.getElementById('feed');
 const textInput = document.getElementById('textInput');
@@ -382,6 +380,9 @@ const genvoiceVoiceIdInput = document.getElementById('genvoiceVoiceId');
 const testVoiceBtn = document.getElementById('testVoiceBtn');
 const statusLine = document.getElementById('statusLine');
 const statusLabel = document.getElementById('statusLabel');
+const ttsAudio = document.getElementById('ttsAudio');
+
+const GENVOICE_BASE = 'https://api.genvoice.ru/v1';
 
 let history = [];
 let accessToken = null;
@@ -524,7 +525,7 @@ async function handleSend(){
     const reply = await askGigaChat(text);
     addMsg('assistant', reply);
     if(settings.voiceOut){
-      speak(reply);
+      await speak(reply);
     } else {
       setStatus('idle', 'ожидание');
     }
@@ -591,26 +592,88 @@ micBtn.onclick = () => {
   recognizer.start();
 };
 
-// ---------- speech synthesis ----------
-function speak(text, voiceName){
+// ---------- speech output: GenVoice TTS (with browser-voice fallback) ----------
+
+// Раньше эта функция вообще не трогала GenVoice и всегда использовала
+// системный голос браузера (поэтому звучала "Милена", а не настроенный
+// голос GenVoice). Теперь: если в настройках есть ключ GenVoice и voice_id —
+// синтезируем реальным API и проигрываем mp3. Если ключа нет — честно
+// откатываемся на встроенный синтез речи браузера, чтобы кнопка вообще
+// что-то говорила.
+
+async function speak(text){
+  if(settings.genvoiceKey && settings.genvoiceVoiceId){
+    return speakGenVoice(text);
+  }
+  return speakBrowser(text);
+}
+
+async function speakGenVoice(text){
+  setStatus('speaking', 'говорю');
+  try{
+    const res = await fetch(GENVOICE_BASE + '/api/tts', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + settings.genvoiceKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: text,
+        voice_id: settings.genvoiceVoiceId,
+        output_format: 'mp3_24000_48'
+      })
+    });
+
+    if(!res.ok){
+      let detail = '';
+      try{ detail = (await res.json()).message || ''; }catch(_){}
+      throw new Error('Ошибка GenVoice: ' + res.status + (detail ? ' — ' + detail : ''));
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+
+    return new Promise((resolve) => {
+      ttsAudio.src = url;
+      ttsAudio.onended = () => {
+        URL.revokeObjectURL(url);
+        setStatus('idle', 'ожидание');
+        resolve();
+      };
+      ttsAudio.onerror = () => {
+        URL.revokeObjectURL(url);
+        setStatus('idle', 'ожидание');
+        resolve();
+      };
+      ttsAudio.play().catch(err => {
+        URL.revokeObjectURL(url);
+        setStatus('idle', 'ожидание');
+        addMsg('error', 'Не удалось воспроизвести аудио: ' + err.message);
+        resolve();
+      });
+    });
+  }catch(err){
+    setStatus('idle', 'ожидание');
+    addMsg('error', err.message);
+  }
+}
+
+function speakBrowser(text){
   if(!('speechSynthesis' in window)){
     setStatus('idle', 'ожидание');
-    return;
+    return Promise.resolve();
   }
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.lang = 'ru-RU';
-  utter.rate = 1.02;
+  return new Promise((resolve) => {
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ru-RU';
+    utter.rate = 1.02;
 
-  const name = voiceName !== undefined ? voiceName : settings.voiceName;
-  const voices = window.speechSynthesis.getVoices();
-  const chosen = voices.find(v => v.name === name);
-  if(chosen) utter.voice = chosen;
-
-  setStatus('speaking', 'говорю');
-  utter.onend = () => setStatus('idle', 'ожидание');
-  utter.onerror = () => setStatus('idle', 'ожидание');
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(utter);
+    setStatus('speaking', 'говорю');
+    utter.onend = () => { setStatus('idle', 'ожидание'); resolve(); };
+    utter.onerror = () => { setStatus('idle', 'ожидание'); resolve(); };
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+  });
 }
 </script>
 
