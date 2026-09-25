@@ -426,7 +426,7 @@ async function loadVoices(){
   genvoiceVoiceIdInput.innerHTML = '<option value="">— загрузка... —</option>';
 
   try{
-    const res = await fetch(proxyBase + '/my_voices', {
+    const res = await fetch(proxyBase + '/voices', {
       headers: { 'Authorization': 'Bearer ' + key }
     });
     if(!res.ok){
