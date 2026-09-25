@@ -338,8 +338,20 @@
 
     <div class="field checkline">
       <input type="checkbox" id="voiceOut">
-      <label for="voiceOut">Озвучивать ответы (синтез речи)</label>
+      <label for="voiceOut">Озвучивать ответы (GenVoice)</label>
     </div>
+
+    <div class="field">
+      <label for="genvoiceKey">GenVoice API key</label>
+      <input type="password" id="genvoiceKey" placeholder="sk_live_...">
+    </div>
+
+    <div class="field">
+      <label for="genvoiceVoiceId">Voice ID</label>
+      <input type="text" id="genvoiceVoiceId" placeholder="например voice_ru_male_01">
+    </div>
+
+    <button class="btn" id="testVoiceBtn" type="button" style="margin-bottom:16px;">&#9654; Проверить голос</button>
 
     <div class="modal-actions">
       <button class="btn" id="cancelBtn">Отмена</button>
@@ -347,7 +359,7 @@
     </div>
 
     <div class="warn">
-      GigaChat требует промежуточный сервер (gigachat-proxy.js) — задеплойте его на Render.com и вставьте его адрес сюда. Локально по умолчанию: http://localhost:8787.
+      GigaChat и GenVoice требуют промежуточный сервер (gigachat-proxy.js) — задеплойте его на Render.com и вставьте адрес сюда. Локально по умолчанию: http://localhost:8787.
     </div>
   </div>
 </div>
@@ -365,6 +377,9 @@ const authKeyInput = document.getElementById('authKey');
 const scopeSelect = document.getElementById('scope');
 const proxyBaseInput = document.getElementById('proxyBase');
 const voiceOutCheck = document.getElementById('voiceOut');
+const genvoiceKeyInput = document.getElementById('genvoiceKey');
+const genvoiceVoiceIdInput = document.getElementById('genvoiceVoiceId');
+const testVoiceBtn = document.getElementById('testVoiceBtn');
 const statusLine = document.getElementById('statusLine');
 const statusLabel = document.getElementById('statusLabel');
 
@@ -378,19 +393,29 @@ function loadSettings(){
   const scope = localStorage.getItem('jarvis_scope') || 'GIGACHAT_API_PERS';
   const proxyBase = localStorage.getItem('jarvis_proxy_base') || 'http://localhost:8787';
   const voiceOut = localStorage.getItem('jarvis_voice_out') === '1';
+  const genvoiceKey = localStorage.getItem('jarvis_genvoice_key') || '';
+  const genvoiceVoiceId = localStorage.getItem('jarvis_genvoice_voice_id') || '';
   authKeyInput.value = key;
   scopeSelect.value = scope;
   proxyBaseInput.value = proxyBase;
   voiceOutCheck.checked = voiceOut;
-  return { key, scope, proxyBase, voiceOut };
+  genvoiceKeyInput.value = genvoiceKey;
+  genvoiceVoiceIdInput.value = genvoiceVoiceId;
+  return { key, scope, proxyBase, voiceOut, genvoiceKey, genvoiceVoiceId };
 }
 function saveSettings(){
   localStorage.setItem('jarvis_auth_key', authKeyInput.value.trim());
   localStorage.setItem('jarvis_scope', scopeSelect.value);
   localStorage.setItem('jarvis_proxy_base', proxyBaseInput.value.trim().replace(/\/$/, ''));
   localStorage.setItem('jarvis_voice_out', voiceOutCheck.checked ? '1' : '0');
+  localStorage.setItem('jarvis_genvoice_key', genvoiceKeyInput.value.trim());
+  localStorage.setItem('jarvis_genvoice_voice_id', genvoiceVoiceIdInput.value.trim());
 }
 let settings = loadSettings();
+
+testVoiceBtn.onclick = () => {
+  speak('Проверка связи. Джарвис на линии.').catch(err => addMsg('error', err.message));
+};
 
 gearBtn.onclick = () => { loadSettings(); overlay.classList.add('open'); };
 cancelBtn.onclick = () => overlay.classList.remove('open');
@@ -567,7 +592,7 @@ micBtn.onclick = () => {
 };
 
 // ---------- speech synthesis ----------
-function speak(text){
+function speak(text, voiceName){
   if(!('speechSynthesis' in window)){
     setStatus('idle', 'ожидание');
     return;
@@ -575,6 +600,12 @@ function speak(text){
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = 'ru-RU';
   utter.rate = 1.02;
+
+  const name = voiceName !== undefined ? voiceName : settings.voiceName;
+  const voices = window.speechSynthesis.getVoices();
+  const chosen = voices.find(v => v.name === name);
+  if(chosen) utter.voice = chosen;
+
   setStatus('speaking', 'говорю');
   utter.onend = () => setStatus('idle', 'ожидание');
   utter.onerror = () => setStatus('idle', 'ожидание');
