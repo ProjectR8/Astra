@@ -425,39 +425,91 @@ async function loadVoices(){
   const previousValue = genvoiceVoiceIdInput.value || settings.genvoiceVoiceId;
   genvoiceVoiceIdInput.innerHTML = '<option value="">— загрузка... —</option>';
 
+  const headers = { 'Authorization': 'Bearer ' + key };
+  let publicVoices = [];
+  let myVoices = [];
+
   try{
-    const res = await fetch(proxyBase + '/voices', {
-      headers: { 'Authorization': 'Bearer ' + key }
-    });
-    if(!res.ok){
+    const res = await fetch(proxyBase + '/voices', { headers });
+    if(res.ok){
+      publicVoices = await res.json();
+    } else {
       let detail = '';
       try{ detail = await res.text(); }catch(_){}
-      throw new Error('Ошибка загрузки голосов: ' + res.status + (detail ? ' — ' + detail.slice(0, 300) : ''));
+      addMsg('error', 'Публичные голоса: ' + res.status + (detail ? ' — ' + detail.slice(0, 200) : ''));
     }
-    const voices = await res.json();
-    genvoiceVoiceIdInput.innerHTML = '';
-    if(!Array.isArray(voices) || voices.length === 0){
-      genvoiceVoiceIdInput.innerHTML = '<option value="">— голоса не найдены —</option>';
-      return;
+  }catch(e){
+    addMsg('error', 'Не удалось получить публичные голоса: ' + e.message);
+  }
+
+  try{
+    const res2 = await fetch(proxyBase + '/my-voices', { headers });
+    if(res2.ok){
+      const data = await res2.json();
+      myVoices = Array.isArray(data) ? data : (data.voices || []);
+      if(myVoices.length === 0){
+        addMsg('system', 'GenVoice: личных голосов не найдено (ответ /my-voices пуст).');
+      }
+    } else {
+      let detail = '';
+      try{ detail = await res2.text(); }catch(_){}
+      addMsg('error', 'Личные голоса: ' + res2.status + (detail ? ' — ' + detail.slice(0, 300) : ''));
     }
-    for(const v of voices){
+  }catch(e){
+    addMsg('error', 'Не удалось получить личные голоса: ' + e.message);
+  }
+
+  genvoiceVoiceIdInput.innerHTML = '';
+
+  const myCompleted = myVoices.filter(v => v.status === 'COMPLETED');
+  const myPending = myVoices.filter(v => v.status && v.status !== 'COMPLETED');
+
+  if(myCompleted.length){
+    const group = document.createElement('optgroup');
+    group.label = 'Мои голоса';
+    for(const v of myCompleted){
+      const opt = document.createElement('option');
+      opt.value = v.id;
+      opt.textContent = '★ ' + v.name;
+      group.appendChild(opt);
+    }
+    genvoiceVoiceIdInput.appendChild(group);
+  }
+
+  if(Array.isArray(publicVoices) && publicVoices.length){
+    const group = document.createElement('optgroup');
+    group.label = 'Публичные голоса';
+    for(const v of publicVoices){
       const opt = document.createElement('option');
       opt.value = v.id;
       opt.textContent = v.name + (v.description ? ' — ' + v.description : '');
-      genvoiceVoiceIdInput.appendChild(opt);
+      group.appendChild(opt);
     }
-    if(previousValue && voices.some(v => v.id === previousValue)){
-      genvoiceVoiceIdInput.value = previousValue;
-    } else if(previousValue){
-      const opt = document.createElement('option');
-      opt.value = previousValue;
-      opt.textContent = previousValue + ' (сохранённый, не найден в списке)';
-      genvoiceVoiceIdInput.appendChild(opt);
-      genvoiceVoiceIdInput.value = previousValue;
-    }
-  }catch(err){
-    genvoiceVoiceIdInput.innerHTML = '<option value="">— ошибка загрузки —</option>';
-    addMsg('error', err.message);
+    genvoiceVoiceIdInput.appendChild(group);
+  }
+
+  for(const v of myPending){
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.disabled = true;
+    opt.textContent = '⏳ ' + v.name + ' (' + v.status + ', ещё не готов)';
+    genvoiceVoiceIdInput.appendChild(opt);
+  }
+
+  if(genvoiceVoiceIdInput.options.length === 0){
+    genvoiceVoiceIdInput.innerHTML = '<option value="">— голоса не найдены —</option>';
+    return;
+  }
+
+  const allIds = [...myCompleted, ...(Array.isArray(publicVoices) ? publicVoices : [])].map(v => v.id);
+  if(previousValue && allIds.includes(previousValue)){
+    genvoiceVoiceIdInput.value = previousValue;
+  } else if(previousValue){
+    const opt = document.createElement('option');
+    opt.value = previousValue;
+    opt.textContent = previousValue + ' (сохранённый, не найден в списке)';
+    genvoiceVoiceIdInput.appendChild(opt);
+    genvoiceVoiceIdInput.value = previousValue;
   }
 }
 loadVoicesBtn.onclick = loadVoices;
