@@ -95,6 +95,8 @@
     transition:border-color .2s, color .2s;
   }
   .gear:hover{ border-color:var(--brass-dim); color:var(--brass); }
+  .gear.voice-toggle{ left:24px; right:auto; color:var(--teal); border-color:#24413f; }
+  .gear.voice-toggle:hover{ border-color:var(--teal); color:#7ec2c2; }
 
   main{
     flex:1;
@@ -285,11 +287,106 @@
     line-height:1.5;
     background:rgba(176,82,74,0.08);
   }
+
+  /* ---- voice mode (real-time) ---- */
+  .voice-overlay{
+    position:fixed; inset:0;
+    background: radial-gradient(900px 500px at 50% 32%, #1b212c 0%, var(--bg) 65%);
+    display:none;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:26px;
+    z-index:30;
+    padding:40px 24px;
+  }
+  .voice-overlay.open{ display:flex; }
+  .voice-close{
+    position:absolute; top:24px; right:24px;
+    width:38px; height:38px;
+    border-radius:50%;
+    border:1px solid var(--line);
+    background:var(--panel);
+    color:var(--ink-dim);
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer;
+    font-size:15px;
+    transition:border-color .2s, color .2s;
+  }
+  .voice-close:hover{ border-color:var(--err); color:var(--err); }
+
+  .voice-orb{
+    position:relative;
+    width:180px; height:180px;
+    border-radius:50%;
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(circle at 35% 30%, #232a36, var(--panel) 70%);
+    border:1px solid var(--line);
+    transition:border-color .4s ease, box-shadow .4s ease;
+  }
+  .voice-orb::before, .voice-orb::after{
+    content:'';
+    position:absolute; inset:-14px;
+    border-radius:50%;
+    border:1px solid transparent;
+    opacity:0;
+  }
+  .voice-orb-core{
+    width:64px; height:64px;
+    border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, var(--brass-dim), #4a3a1e);
+    transform:scale(0.9);
+    transition:background .4s ease, transform .3s ease;
+  }
+
+  .voice-orb.listening{ border-color:var(--teal); box-shadow:0 0 40px 4px rgba(79,139,139,0.25); }
+  .voice-orb.listening .voice-orb-core{ background:radial-gradient(circle at 35% 30%, #7ec2c2, var(--teal)); animation:corePulse 1.2s ease-in-out infinite; }
+  .voice-orb.listening::before{ border-color:var(--teal); animation:ringPulse 1.8s ease-out infinite; }
+  .voice-orb.listening::after{ border-color:var(--teal); animation:ringPulse 1.8s ease-out infinite .6s; }
+
+  .voice-orb.thinking{ border-color:var(--brass); box-shadow:0 0 30px 2px rgba(201,143,58,0.2); }
+  .voice-orb.thinking .voice-orb-core{ animation:corePulse .7s ease-in-out infinite; }
+
+  .voice-orb.speaking{ border-color:var(--brass); box-shadow:0 0 46px 6px rgba(201,143,58,0.3); }
+  .voice-orb.speaking .voice-orb-core{ background:radial-gradient(circle at 35% 30%, #e8b563, var(--brass)); animation:corePulse .5s ease-in-out infinite; }
+  .voice-orb.speaking::before{ border-color:var(--brass); animation:ringPulse 1s ease-out infinite; }
+  .voice-orb.speaking::after{ border-color:var(--brass); animation:ringPulse 1s ease-out infinite .3s; }
+
+  @keyframes corePulse{ 0%,100%{ transform:scale(1); } 50%{ transform:scale(1.14); } }
+  @keyframes ringPulse{ 0%{ opacity:.5; transform:scale(.85); } 100%{ opacity:0; transform:scale(1.35); } }
+
+  .voice-status-label{
+    font-family:'JetBrains Mono', monospace;
+    font-size:12px;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+  }
+  .voice-transcript{
+    max-width:520px;
+    min-height:48px;
+    text-align:center;
+    font-size:16px;
+    line-height:1.5;
+    color:var(--ink);
+    padding:0 12px;
+  }
+  .voice-hint{
+    font-family:'JetBrains Mono', monospace;
+    font-size:10.5px;
+    letter-spacing:1px;
+    color:var(--ink-dim);
+    opacity:.6;
+  }
 </style>
 </head>
 <body>
 
 <header>
+  <button class="gear voice-toggle" id="voiceModeBtn" title="Голосовой режим" aria-label="Голосовой режим">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="5" width="2" height="6" rx="1" fill="currentColor"/><rect x="5" y="2" width="2" height="12" rx="1" fill="currentColor"/><rect x="9" y="4" width="2" height="8" rx="1" fill="currentColor"/><rect x="13" y="6" width="2" height="4" rx="1" fill="currentColor"/></svg>
+  </button>
   <button class="gear" id="gearBtn" title="Настройки" aria-label="Настройки">&#9881;</button>
   <h1>JARVIS</h1>
   <div class="status-line idle" id="statusLine"></div>
@@ -365,6 +462,16 @@
 
 <audio id="ttsAudio" style="display:none;"></audio>
 
+<div class="voice-overlay" id="voiceOverlay">
+  <button class="voice-close" id="voiceCloseBtn" aria-label="Закрыть голосовой режим">&#10005;</button>
+  <div class="voice-orb idle" id="voiceOrb">
+    <div class="voice-orb-core"></div>
+  </div>
+  <div class="voice-status-label" id="voiceStatus">ожидание</div>
+  <div class="voice-transcript" id="voiceTranscript"></div>
+  <div class="voice-hint">Нажмите на круг, чтобы прервать</div>
+</div>
+
 <script>
 const feed = document.getElementById('feed');
 const textInput = document.getElementById('textInput');
@@ -385,10 +492,127 @@ const loadVoicesBtn = document.getElementById('loadVoicesBtn');
 const statusLine = document.getElementById('statusLine');
 const statusLabel = document.getElementById('statusLabel');
 const ttsAudio = document.getElementById('ttsAudio');
+const voiceModeBtn = document.getElementById('voiceModeBtn');
+const voiceOverlay = document.getElementById('voiceOverlay');
+const voiceCloseBtn = document.getElementById('voiceCloseBtn');
+const voiceOrb = document.getElementById('voiceOrb');
+const voiceStatus = document.getElementById('voiceStatus');
+const voiceTranscript = document.getElementById('voiceTranscript');
 
 let history = [];
 let accessToken = null;
 let tokenExpiresAt = 0;
+
+// ---------- профиль пользователя (для персонализации ответов) ----------
+const USER_PROFILE = { name: 'Иван', birthDate: '2010-04-27', city: 'Оренбург' };
+
+function getUserAge(){
+  const b = new Date(USER_PROFILE.birthDate);
+  const now = new Date();
+  let age = now.getFullYear() - b.getFullYear();
+  const m = now.getMonth() - b.getMonth();
+  if(m < 0 || (m === 0 && now.getDate() < b.getDate())) age--;
+  return age;
+}
+
+function buildSystemPrompt(){
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('ru-RU', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+  const timeStr = now.toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit' });
+  return 'Ты Jarvis — лаконичный, слегка ироничный голосовой ассистент. Отвечай по-русски, коротко и по делу, если не попросили развёрнуто.\n' +
+    'Сейчас ' + dateStr + ', ' + timeStr + '.\n' +
+    'Пользователя зовут ' + USER_PROFILE.name + ' (' + getUserAge() + ' лет, город ' + USER_PROFILE.city + ').\n' +
+    'Если для ответа нужны свежие факты из интернета — вызови функцию web_search.\n' +
+    'Если просят напомнить о чём-то — вызови функцию create_reminder.';
+}
+
+// ---------- функции для GigaChat (function calling) ----------
+const FUNCTIONS = [
+  {
+    name: 'web_search',
+    description: 'Поиск актуальной информации в интернете: новости, факты, текущие события.',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'Поисковый запрос' } },
+      required: ['query']
+    }
+  },
+  {
+    name: 'create_reminder',
+    description: 'Создать напоминание пользователю через N минут.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'О чём напомнить' },
+        minutes_from_now: { type: 'number', description: 'Через сколько минут напомнить' }
+      },
+      required: ['text', 'minutes_from_now']
+    }
+  }
+];
+
+async function callWebSearch(query){
+  try{
+    const res = await fetch(settings.proxyBase + '/search?q=' + encodeURIComponent(query));
+    if(!res.ok) return 'Ошибка поиска: ' + res.status;
+    const data = await res.json();
+    const parts = [];
+    if(data.AbstractText) parts.push(data.AbstractText + (data.AbstractURL ? ' (' + data.AbstractURL + ')' : ''));
+    if(Array.isArray(data.RelatedTopics)){
+      for(const t of data.RelatedTopics.slice(0, 3)){
+        if(t.Text) parts.push(t.Text);
+      }
+    }
+    return parts.length ? parts.join('\n') : 'Ничего конкретного не найдено, ответь по своим знаниям.';
+  }catch(e){
+    return 'Поиск недоступен: ' + e.message;
+  }
+}
+
+function createReminder(text, minutesFromNow){
+  const fireAt = Date.now() + minutesFromNow * 60000;
+  const reminders = JSON.parse(localStorage.getItem('jarvis_reminders') || '[]');
+  reminders.push({ text, fireAt });
+  localStorage.setItem('jarvis_reminders', JSON.stringify(reminders));
+  scheduleReminder(text, fireAt);
+  return 'Напоминание создано: "' + text + '" через ' + minutesFromNow + ' мин.';
+}
+
+function scheduleReminder(text, fireAt){
+  const delay = fireAt - Date.now();
+  if(delay <= 0) return;
+  setTimeout(() => {
+    addMsg('system', '🔔 ' + text);
+    if(settings.voiceOut) speak('Напоминание: ' + text);
+    if('Notification' in window && Notification.permission === 'granted'){
+      new Notification('JARVIS напоминает', { body: text });
+    }
+    const list = JSON.parse(localStorage.getItem('jarvis_reminders') || '[]')
+      .filter(r => !(r.text === text && r.fireAt === fireAt));
+    localStorage.setItem('jarvis_reminders', JSON.stringify(list));
+  }, delay);
+}
+
+function restoreReminders(){
+  const list = JSON.parse(localStorage.getItem('jarvis_reminders') || '[]');
+  const now = Date.now();
+  for(const r of list){ if(r.fireAt > now) scheduleReminder(r.text, r.fireAt); }
+  localStorage.setItem('jarvis_reminders', JSON.stringify(list.filter(r => r.fireAt > now)));
+}
+
+// ---------- память между сессиями ----------
+function loadHistory(){
+  try{ history = JSON.parse(localStorage.getItem('jarvis_history') || '[]'); }
+  catch(_){ history = []; }
+}
+function saveHistory(){
+  try{ localStorage.setItem('jarvis_history', JSON.stringify(history.slice(-40))); }catch(_){}
+}
+function renderHistory(){
+  for(const m of history){
+    if(m.role === 'user' || m.role === 'assistant') addMsg(m.role, m.content);
+  }
+}
 
 // ---------- settings persistence ----------
 function loadSettings(){
@@ -415,6 +639,12 @@ function saveSettings(){
   localStorage.setItem('jarvis_genvoice_voice_id', genvoiceVoiceIdInput.value.trim());
 }
 let settings = loadSettings();
+loadHistory();
+renderHistory();
+restoreReminders();
+if('Notification' in window && Notification.permission === 'default'){
+  Notification.requestPermission();
+}
 
 async function loadVoices(){
   const key = genvoiceKeyInput.value.trim();
@@ -536,9 +766,16 @@ saveBtn.onclick = () => {
 if(!settings.key){ overlay.classList.add('open'); }
 
 // ---------- status ----------
+let currentState = 'idle';
+let voiceModeActive = false;
 function setStatus(state, label){
+  currentState = state;
   statusLine.className = 'status-line ' + state;
   statusLabel.textContent = label;
+  if(voiceModeActive){
+    voiceOrb.className = 'voice-orb ' + state;
+    voiceStatus.textContent = label;
+  }
 }
 
 // ---------- chat feed ----------
@@ -591,31 +828,47 @@ async function getAccessToken(){
 async function askGigaChat(userText){
   const token = await getAccessToken();
   history.push({ role: 'user', content: userText });
+  saveHistory();
 
-  const res = await fetch(settings.proxyBase + '/chat', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + token
-    },
-    body: JSON.stringify({
-      model: 'GigaChat-2-Max',
-      messages: [
-        { role: 'system', content: 'Ты Jarvis — лаконичный, слегка ироничный голосовой ассистент. Отвечай по-русски, коротко и по делу, если не попросили развёрнуто.' },
-        ...history
-      ],
-      temperature: 0.7
-    })
-  });
+  let messages = [{ role: 'system', content: buildSystemPrompt() }, ...history];
+  let guard = 0;
 
-  if(!res.ok){
-    throw new Error('Ошибка запроса к GigaChat: ' + res.status);
+  while(guard++ < 4){
+    const res = await fetch(settings.proxyBase + '/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({
+        model: 'GigaChat-2-Max',
+        messages,
+        functions: FUNCTIONS,
+        function_call: 'auto',
+        temperature: 0.7
+      })
+    });
+    if(!res.ok) throw new Error('Ошибка запроса к GigaChat: ' + res.status);
+    const data = await res.json();
+    const msg = data.choices?.[0]?.message;
+    if(!msg) return '(пустой ответ)';
+
+    if(msg.function_call){
+      const { name, arguments: argsRaw } = msg.function_call;
+      let args = {};
+      try{ args = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw || {}); }catch(_){}
+      let result = 'Неизвестная функция: ' + name;
+      if(name === 'web_search') result = await callWebSearch(args.query || '');
+      else if(name === 'create_reminder') result = createReminder(args.text || '', Number(args.minutes_from_now) || 1);
+      messages.push(msg);
+      messages.push({ role: 'function', name, content: result });
+      continue;
+    }
+
+    const reply = msg.content ?? '(пустой ответ)';
+    history.push({ role: 'assistant', content: reply });
+    if(history.length > 40) history = history.slice(-40);
+    saveHistory();
+    return reply;
   }
-  const data = await res.json();
-  const reply = data.choices?.[0]?.message?.content ?? '(пустой ответ)';
-  history.push({ role: 'assistant', content: reply });
-  if(history.length > 20) history = history.slice(-20);
-  return reply;
+  return 'Не удалось обработать запрос (слишком много вызовов функций подряд).';
 }
 
 // ---------- send flow ----------
@@ -696,6 +949,97 @@ micBtn.onclick = () => {
   micBtn.classList.add('active');
   setStatus('listening', 'слушаю');
   recognizer.start();
+};
+
+// ---------- голосовой режим (непрерывный разговор) ----------
+let voiceRecognizer = null;
+let voiceInterrupted = false;
+
+function openVoiceMode(){
+  if(!SpeechRecognition){
+    addMsg('error', 'Голосовой ввод не поддерживается этим браузером.');
+    return;
+  }
+  voiceModeActive = true;
+  voiceTranscript.textContent = '';
+  voiceOverlay.classList.add('open');
+  startVoiceListening();
+}
+
+function closeVoiceMode(){
+  voiceModeActive = false;
+  if(voiceRecognizer){ try{ voiceRecognizer.abort(); }catch(_){} }
+  if(window.speechSynthesis) window.speechSynthesis.cancel();
+  ttsAudio.pause();
+  voiceOverlay.classList.remove('open');
+  setStatus('idle', 'ожидание');
+}
+
+function startVoiceListening(){
+  if(!voiceModeActive) return;
+  voiceRecognizer = new SpeechRecognition();
+  voiceRecognizer.lang = 'ru-RU';
+  voiceRecognizer.continuous = false;
+  voiceRecognizer.interimResults = true;
+
+  let finalText = '';
+  voiceRecognizer.onresult = (e) => {
+    let interim = '';
+    for(let i = e.resultIndex; i < e.results.length; i++){
+      const t = e.results[i][0].transcript;
+      if(e.results[i].isFinal) finalText += t;
+      else interim += t;
+    }
+    voiceTranscript.textContent = (finalText + interim).trim();
+  };
+  voiceRecognizer.onerror = (e) => {
+    if(e.error === 'no-speech' || e.error === 'aborted') return;
+    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      addMsg('error', 'Доступ к микрофону запрещён.');
+      closeVoiceMode();
+      return;
+    }
+    addMsg('error', 'Ошибка распознавания: ' + e.error);
+  };
+  voiceRecognizer.onend = async () => {
+    if(!voiceModeActive) return;
+    const text = finalText.trim();
+    if(!text){ startVoiceListening(); return; }
+
+    addMsg('user', text);
+    setStatus('thinking', 'обработка');
+    try{
+      const reply = await askGigaChat(text);
+      addMsg('assistant', reply);
+      voiceTranscript.textContent = reply;
+      await speak(reply);
+    }catch(err){
+      addMsg('error', err.message);
+      voiceTranscript.textContent = 'Ошибка: ' + err.message;
+      setStatus('idle', 'ожидание');
+    }
+    if(voiceInterrupted){ voiceInterrupted = false; }
+    else if(voiceModeActive){ startVoiceListening(); }
+  };
+
+  voiceTranscript.textContent = '';
+  setStatus('listening', 'слушаю');
+  voiceRecognizer.start();
+}
+
+voiceModeBtn.onclick = openVoiceMode;
+voiceCloseBtn.onclick = closeVoiceMode;
+voiceOrb.onclick = () => {
+  if(!voiceModeActive) return;
+  if(currentState === 'listening' && voiceRecognizer){
+    voiceRecognizer.stop();
+  } else if(currentState === 'speaking'){
+    voiceInterrupted = true;
+    if(window.speechSynthesis) window.speechSynthesis.cancel();
+    ttsAudio.pause();
+    setStatus('idle', 'ожидание');
+    startVoiceListening();
+  }
 };
 
 // ---------- speech output: GenVoice TTS (with browser-voice fallback) ----------
