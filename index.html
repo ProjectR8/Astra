@@ -301,7 +301,7 @@
 </header>
 
 <main id="feed">
-  <div class="msg system">Голосовой ассистент на GigaChat. Настройте ключ доступа, чтобы начать.</div>
+  <div class="msg system">Голосовой ассистент на GigaChat. Настройте ключ и адрес прокси, чтобы начать.</div>
 </main>
 
 <div class="dock">
@@ -315,7 +315,7 @@
 <div class="overlay" id="overlay">
   <div class="modal">
     <h2>Настройки GigaChat</h2>
-    <p class="hint">Ключ хранится только в вашем браузере (localStorage) и никуда, кроме API GigaChat, не отправляется.</p>
+    <p class="hint">Ключ и адрес прокси хранятся только в вашем браузере (localStorage).</p>
 
     <div class="field">
       <label for="authKey">Authorization key (Base64)</label>
@@ -331,6 +331,11 @@
       </select>
     </div>
 
+    <div class="field">
+      <label for="proxyBase">Адрес прокси-сервера</label>
+      <input type="text" id="proxyBase" placeholder="https://ваш-сервис.onrender.com">
+    </div>
+
     <div class="field checkline">
       <input type="checkbox" id="voiceOut">
       <label for="voiceOut">Озвучивать ответы (синтез речи)</label>
@@ -342,7 +347,7 @@
     </div>
 
     <div class="warn">
-      GigaChat API размещён на серверах Сбера и рассчитан на серверные интеграции. Прямой запрос из браузера может быть заблокирован политикой CORS — если это произойдёт, потребуется собственный прокси-сервер между этой страницей и api.gigachat. Ключ, который вы уже присылали в чат ранее, стоит перевыпустить.
+      GigaChat требует промежуточный сервер (gigachat-proxy.js) — задеплойте его на Render.com и вставьте его адрес сюда. Локально по умолчанию: http://localhost:8787.
     </div>
   </div>
 </div>
@@ -358,6 +363,7 @@ const saveBtn = document.getElementById('saveBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 const authKeyInput = document.getElementById('authKey');
 const scopeSelect = document.getElementById('scope');
+const proxyBaseInput = document.getElementById('proxyBase');
 const voiceOutCheck = document.getElementById('voiceOut');
 const statusLine = document.getElementById('statusLine');
 const statusLabel = document.getElementById('statusLabel');
@@ -370,15 +376,18 @@ let tokenExpiresAt = 0;
 function loadSettings(){
   const key = localStorage.getItem('jarvis_auth_key') || '';
   const scope = localStorage.getItem('jarvis_scope') || 'GIGACHAT_API_PERS';
+  const proxyBase = localStorage.getItem('jarvis_proxy_base') || 'http://localhost:8787';
   const voiceOut = localStorage.getItem('jarvis_voice_out') === '1';
   authKeyInput.value = key;
   scopeSelect.value = scope;
+  proxyBaseInput.value = proxyBase;
   voiceOutCheck.checked = voiceOut;
-  return { key, scope, voiceOut };
+  return { key, scope, proxyBase, voiceOut };
 }
 function saveSettings(){
   localStorage.setItem('jarvis_auth_key', authKeyInput.value.trim());
   localStorage.setItem('jarvis_scope', scopeSelect.value);
+  localStorage.setItem('jarvis_proxy_base', proxyBaseInput.value.trim().replace(/\/$/, ''));
   localStorage.setItem('jarvis_voice_out', voiceOutCheck.checked ? '1' : '0');
 }
 let settings = loadSettings();
@@ -410,7 +419,7 @@ function addMsg(role, text){
   return div;
 }
 
-// ---------- GigaChat auth ----------
+// ---------- GigaChat auth (через прокси, см. gigachat-proxy.js) ----------
 function uuidv4(){
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
     const r = Math.random()*16|0, v = c==='x'?r:(r&0x3|0x8);
@@ -421,20 +430,25 @@ function uuidv4(){
 async function getAccessToken(){
   if(accessToken && Date.now() < tokenExpiresAt - 15000) return accessToken;
   if(!settings.key) throw new Error('Не задан ключ доступа. Откройте настройки.');
+  if(!settings.proxyBase) throw new Error('Не задан адрес прокси-сервера. Откройте настройки.');
 
-  const res = await fetch('https://ngw.devices.sberbank.ru:9443/api/v2/oauth', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'application/json',
-      'RqUID': uuidv4(),
-      'Authorization': 'Basic ' + settings.key
-    },
-    body: 'scope=' + encodeURIComponent(settings.scope)
-  });
+  let res;
+  try{
+    res = await fetch(settings.proxyBase + '/oauth', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'RqUID': uuidv4(),
+        'Authorization': 'Basic ' + settings.key
+      },
+      body: 'scope=' + encodeURIComponent(settings.scope)
+    });
+  }catch(e){
+    throw new Error('Не удалось достучаться до прокси на ' + settings.proxyBase + '. Проверьте, что он запущен и адрес указан верно.');
+  }
 
   if(!res.ok){
-    throw new Error('Ошибка авторизации GigaChat: ' + res.status + '. Возможная причина — блокировка CORS браузером (см. настройки) или неверный ключ.');
+    throw new Error('Ошибка авторизации GigaChat: ' + res.status + '. Проверьте ключ и scope в настройках.');
   }
   const data = await res.json();
   accessToken = data.access_token;
@@ -446,11 +460,10 @@ async function askGigaChat(userText){
   const token = await getAccessToken();
   history.push({ role: 'user', content: userText });
 
-  const res = await fetch('https://gigachat.devices.sberbank.ru/api/v1/chat/completions', {
+  const res = await fetch(settings.proxyBase + '/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
       'Authorization': 'Bearer ' + token
     },
     body: JSON.stringify({
