@@ -344,7 +344,10 @@
 
     <div class="field">
       <label for="genvoiceVoiceId">Voice ID</label>
-      <input type="text" id="genvoiceVoiceId" placeholder="например voice_ru_male_01">
+      <select id="genvoiceVoiceId">
+        <option value="">— сначала загрузите список —</option>
+      </select>
+      <button class="btn" id="loadVoicesBtn" type="button" style="margin-top:8px;">&#8635; Обновить список голосов</button>
     </div>
 
     <button class="btn" id="testVoiceBtn" type="button" style="margin-bottom:16px;">&#9654; Проверить голос</button>
@@ -378,6 +381,7 @@ const voiceOutCheck = document.getElementById('voiceOut');
 const genvoiceKeyInput = document.getElementById('genvoiceKey');
 const genvoiceVoiceIdInput = document.getElementById('genvoiceVoiceId');
 const testVoiceBtn = document.getElementById('testVoiceBtn');
+const loadVoicesBtn = document.getElementById('loadVoicesBtn');
 const statusLine = document.getElementById('statusLine');
 const statusLabel = document.getElementById('statusLabel');
 const ttsAudio = document.getElementById('ttsAudio');
@@ -412,11 +416,63 @@ function saveSettings(){
 }
 let settings = loadSettings();
 
+async function loadVoices(){
+  const key = genvoiceKeyInput.value.trim();
+  const proxyBase = proxyBaseInput.value.trim().replace(/\/$/, '');
+  if(!key){ addMsg('system', 'Сначала укажите GenVoice API key.'); return; }
+  if(!proxyBase){ addMsg('system', 'Сначала укажите адрес прокси-сервера.'); return; }
+
+  const previousValue = genvoiceVoiceIdInput.value || settings.genvoiceVoiceId;
+  genvoiceVoiceIdInput.innerHTML = '<option value="">— загрузка... —</option>';
+
+  try{
+    const res = await fetch(proxyBase + '/voices', {
+      headers: { 'Authorization': 'Bearer ' + key }
+    });
+    if(!res.ok){
+      let detail = '';
+      try{ detail = await res.text(); }catch(_){}
+      throw new Error('Ошибка загрузки голосов: ' + res.status + (detail ? ' — ' + detail.slice(0, 300) : ''));
+    }
+    const voices = await res.json();
+    genvoiceVoiceIdInput.innerHTML = '';
+    if(!Array.isArray(voices) || voices.length === 0){
+      genvoiceVoiceIdInput.innerHTML = '<option value="">— голоса не найдены —</option>';
+      return;
+    }
+    for(const v of voices){
+      const opt = document.createElement('option');
+      opt.value = v.id;
+      opt.textContent = v.name + (v.description ? ' — ' + v.description : '');
+      genvoiceVoiceIdInput.appendChild(opt);
+    }
+    if(previousValue && voices.some(v => v.id === previousValue)){
+      genvoiceVoiceIdInput.value = previousValue;
+    } else if(previousValue){
+      const opt = document.createElement('option');
+      opt.value = previousValue;
+      opt.textContent = previousValue + ' (сохранённый, не найден в списке)';
+      genvoiceVoiceIdInput.appendChild(opt);
+      genvoiceVoiceIdInput.value = previousValue;
+    }
+  }catch(err){
+    genvoiceVoiceIdInput.innerHTML = '<option value="">— ошибка загрузки —</option>';
+    addMsg('error', err.message);
+  }
+}
+loadVoicesBtn.onclick = loadVoices;
+
 testVoiceBtn.onclick = () => {
   speak('Проверка связи. Джарвис на линии.').catch(err => addMsg('error', err.message));
 };
 
-gearBtn.onclick = () => { loadSettings(); overlay.classList.add('open'); };
+gearBtn.onclick = () => {
+  loadSettings();
+  overlay.classList.add('open');
+  if(settings.genvoiceKey && settings.proxyBase){
+    loadVoices();
+  }
+};
 cancelBtn.onclick = () => overlay.classList.remove('open');
 saveBtn.onclick = () => {
   saveSettings();
@@ -595,9 +651,10 @@ micBtn.onclick = () => {
 // Раньше эта функция вообще не трогала GenVoice и всегда использовала
 // системный голос браузера (поэтому звучала "Милена", а не настроенный
 // голос GenVoice). Теперь: если в настройках есть ключ GenVoice и voice_id —
-// синтезируем реальным API и проигрываем mp3. Если ключа нет — честно
-// откатываемся на встроенный синтез речи браузера, чтобы кнопка вообще
-// что-то говорила.
+// запрос идёт через прокси (proxyBase + '/tts', см. gigachat-proxy.js),
+// который пробрасывает его на api.genvoice.ru и обходит CORS. Возвращённый
+// mp3 проигрывается через <audio>. Если ключа нет — откатываемся на
+// встроенный синтез речи браузера.
 
 async function speak(text){
   if(settings.genvoiceKey && settings.genvoiceVoiceId){
@@ -630,8 +687,8 @@ async function speakGenVoice(text){
 
     if(!res.ok){
       let detail = '';
-      try{ detail = (await res.json()).message || ''; }catch(_){}
-      throw new Error('Ошибка GenVoice: ' + res.status + (detail ? ' — ' + detail : ''));
+      try{ detail = await res.text(); }catch(_){}
+      throw new Error('Ошибка GenVoice/прокси: ' + res.status + (detail ? ' — ' + detail.slice(0, 300) : ''));
     }
 
     const blob = await res.blob();
