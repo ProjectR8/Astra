@@ -467,7 +467,7 @@ async function askGigaChat(userText){
       'Authorization': 'Bearer ' + token
     },
     body: JSON.stringify({
-      model: 'GigaChat',
+      model: 'GigaChat-2-Max',
       messages: [
         { role: 'system', content: 'Ты Jarvis — лаконичный, слегка ироничный голосовой ассистент. Отвечай по-русски, коротко и по делу, если не попросили развёрнуто.' },
         ...history
