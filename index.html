@@ -382,8 +382,6 @@ const statusLine = document.getElementById('statusLine');
 const statusLabel = document.getElementById('statusLabel');
 const ttsAudio = document.getElementById('ttsAudio');
 
-const GENVOICE_BASE = 'https://api.genvoice.ru/v1';
-
 let history = [];
 let accessToken = null;
 let tokenExpiresAt = 0;
@@ -609,20 +607,26 @@ async function speak(text){
 }
 
 async function speakGenVoice(text){
+  if(!settings.proxyBase) throw new Error('Не задан адрес прокси-сервера. Откройте настройки.');
   setStatus('speaking', 'говорю');
   try{
-    const res = await fetch(GENVOICE_BASE + '/api/tts', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + settings.genvoiceKey,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text: text,
-        voice_id: settings.genvoiceVoiceId,
-        output_format: 'mp3_24000_48'
-      })
-    });
+    let res;
+    try{
+      res = await fetch(settings.proxyBase + '/tts', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + settings.genvoiceKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: text,
+          voice_id: settings.genvoiceVoiceId,
+          output_format: 'mp3_24000_48'
+        })
+      });
+    }catch(e){
+      throw new Error('Не удалось достучаться до прокси на ' + settings.proxyBase + ' (эндпоинт /tts). Проверьте, что он запущен, задеплоен свежей версией и адрес указан верно.');
+    }
 
     if(!res.ok){
       let detail = '';
