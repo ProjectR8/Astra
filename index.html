@@ -522,39 +522,10 @@ function buildSystemPrompt(){
   return 'Ты Jarvis — лаконичный, слегка ироничный голосовой ассистент. Отвечай по-русски, коротко и по делу, если не попросили развёрнуто.\n' +
     'Сейчас ' + dateStr + ', ' + timeStr + '.\n' +
     'Пользователя зовут ' + USER_PROFILE.name + ' (' + getUserAge() + ' лет, город ' + USER_PROFILE.city + ').\n' +
-    'Если для ответа нужны свежие факты из интернета — вызови функцию web_search.\n' +
-    'Если просят напомнить о чём-то — вызови функцию create_reminder.';
+    'Если в сообщении есть результаты поиска в интернете — используй их в ответе.';
 }
 
-// ---------- функции для GigaChat (function calling) ----------
-const FUNCTIONS = [
-  {
-    name: 'web_search',
-    description: 'Поиск актуальной информации в интернете: новости, факты, текущие события.',
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'Поисковый запрос' } },
-      required: ['query']
-    }
-  },
-  {
-    name: 'create_reminder',
-    description: 'Создать напоминание пользователю через N минут.',
-    parameters: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'О чём напомнить' },
-        minutes_from_now: { type: 'number', description: 'Через сколько минут напомнить' }
-      },
-      required: ['text', 'minutes_from_now']
-    }
-  },
-  {
-    name: 'get_weather',
-    description: 'Узнать погоду в городе пользователя (Оренбург) на сегодня.',
-    parameters: { type: 'object', properties: {}, required: [] }
-  }
-];
+
 
 async function callWebSearch(query){
   try{
@@ -857,49 +828,51 @@ async function getAccessToken(){
 
 async function askGigaChat(userText){
   const token = await getAccessToken();
-  history.push({ role: 'user', content: userText });
-  saveHistory();
 
-  let messages = [{ role: 'system', content: buildSystemPrompt() }, ...history];
-  let guard = 0;
-
-  while(guard++ < 4){
-    const res = await fetch(settings.proxyBase + '/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({
-        model: 'GigaChat-2-Max',
-        messages,
-        functions: FUNCTIONS,
-        function_call: 'auto',
-        temperature: 0.7
-      })
-    });
-    if(!res.ok) throw new Error('Ошибка запроса к GigaChat: ' + res.status);
-    const data = await res.json();
-    const msg = data.choices?.[0]?.message;
-    if(!msg) return '(пустой ответ)';
-
-    if(msg.function_call){
-      const { name, arguments: argsRaw } = msg.function_call;
-      let args = {};
-      try{ args = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw || {}); }catch(_){}
-      let result = 'Неизвестная функция: ' + name;
-      if(name === 'web_search') result = await callWebSearch(args.query || '');
-      else if(name === 'create_reminder') result = createReminder(args.text || '', Number(args.minutes_from_now) || 1);
-      else if(name === 'get_weather') result = await callGetWeather();
-      messages.push(msg);
-      messages.push({ role: 'function', name, content: result });
-      continue;
-    }
-
-    const reply = msg.content ?? '(пустой ответ)';
+  // простые команды обрабатываем локально, не трогая GigaChat вообще
+  const reminderMatch = userText.match(/напомни.*?через\s+(\d+)\s*(минут|мин)/i);
+  if(reminderMatch){
+    const reply = createReminder(userText, Number(reminderMatch[1]));
+    history.push({ role: 'user', content: userText });
     history.push({ role: 'assistant', content: reply });
-    if(history.length > 40) history = history.slice(-40);
     saveHistory();
     return reply;
   }
-  return 'Не удалось обработать запрос (слишком много вызовов функций подряд).';
+  if(/погод/i.test(userText)){
+    const reply = await callGetWeather();
+    history.push({ role: 'user', content: userText });
+    history.push({ role: 'assistant', content: reply });
+    saveHistory();
+    return reply;
+  }
+
+  // для запросов на поиск — подмешиваем результаты в контекст запроса к GigaChat
+  let contextNote = '';
+  if(/найди|поищи|загугли|последние новости|что нового/i.test(userText)){
+    contextNote = '\n\n[Результаты поиска в интернете]\n' + await callWebSearch(userText);
+  }
+
+  history.push({ role: 'user', content: userText });
+  saveHistory();
+
+  const messages = [
+    { role: 'system', content: buildSystemPrompt() },
+    ...history.slice(0, -1),
+    { role: 'user', content: userText + contextNote }
+  ];
+
+  const res = await fetch(settings.proxyBase + '/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify({ model: 'GigaChat-2-Max', messages, temperature: 0.7 })
+  });
+  if(!res.ok) throw new Error('Ошибка запроса к GigaChat: ' + res.status);
+  const data = await res.json();
+  const reply = data.choices?.[0]?.message?.content ?? '(пустой ответ)';
+  history.push({ role: 'assistant', content: reply });
+  if(history.length > 40) history = history.slice(-40);
+  saveHistory();
+  return reply;
 }
 
 // ---------- send flow ----------
