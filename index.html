@@ -522,7 +522,8 @@ function buildSystemPrompt(){
   return 'Ты Jarvis — лаконичный, слегка ироничный голосовой ассистент. Отвечай по-русски, коротко и по делу, если не попросили развёрнуто.\n' +
     'Сейчас ' + dateStr + ', ' + timeStr + '.\n' +
     'Пользователя зовут ' + USER_PROFILE.name + ' (' + getUserAge() + ' лет, город ' + USER_PROFILE.city + ').\n' +
-    'Если в сообщении есть результаты поиска в интернете — используй их в ответе.';
+    'Если в сообщении есть результаты поиска в интернете — используй их в ответе.\n' +
+    'Если для точного ответа нужны свежие данные из интернета (новости, текущие события, факты, которые могли устареть) — не отвечай сразу, а напиши ровно одну строку: SEARCH: короткий поисковый запрос — и больше ничего. После этого тебе пришлют результаты, и ты дашь окончательный ответ.';
 }
 
 
@@ -846,29 +847,32 @@ async function askGigaChat(userText){
     return reply;
   }
 
-  // для запросов на поиск — подмешиваем результаты в контекст запроса к GigaChat
-  let contextNote = '';
-  if(/найди|поищи|загугли|последние новости|что нового/i.test(userText)){
-    contextNote = '\n\n[Результаты поиска в интернете]\n' + await callWebSearch(userText);
-  }
-
   history.push({ role: 'user', content: userText });
   saveHistory();
 
-  const messages = [
-    { role: 'system', content: buildSystemPrompt() },
-    ...history.slice(0, -1),
-    { role: 'user', content: userText + contextNote }
-  ];
+  async function callChat(msgs){
+    const res = await fetch(settings.proxyBase + '/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ model: 'GigaChat-2-Max', messages: msgs, temperature: 0.7 })
+    });
+    if(!res.ok) throw new Error('Ошибка запроса к GigaChat: ' + res.status);
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content ?? '(пустой ответ)';
+  }
 
-  const res = await fetch(settings.proxyBase + '/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-    body: JSON.stringify({ model: 'GigaChat-2-Max', messages, temperature: 0.7 })
-  });
-  if(!res.ok) throw new Error('Ошибка запроса к GigaChat: ' + res.status);
-  const data = await res.json();
-  const reply = data.choices?.[0]?.message?.content ?? '(пустой ответ)';
+  const messages = [{ role: 'system', content: buildSystemPrompt() }, ...history];
+  let reply = await callChat(messages);
+
+  const searchMatch = reply.match(/^SEARCH:\s*(.+)$/im);
+  if(searchMatch){
+    const query = searchMatch[1].trim();
+    const searchResults = await callWebSearch(query);
+    messages.push({ role: 'assistant', content: reply });
+    messages.push({ role: 'user', content: 'Результаты поиска по запросу "' + query + '":\n' + searchResults + '\n\nОтветь на мой предыдущий вопрос, используя эти данные.' });
+    reply = await callChat(messages);
+  }
+
   history.push({ role: 'assistant', content: reply });
   if(history.length > 40) history = history.slice(-40);
   saveHistory();
