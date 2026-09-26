@@ -548,22 +548,21 @@ const FUNCTIONS = [
       },
       required: ['text', 'minutes_from_now']
     }
+  },
+  {
+    name: 'get_weather',
+    description: 'Узнать погоду в городе пользователя (Оренбург) на сегодня.',
+    parameters: { type: 'object', properties: {}, required: [] }
   }
 ];
 
 async function callWebSearch(query){
   try{
-    const res = await fetch(settings.proxyBase + '/search?q=' + encodeURIComponent(query));
+    const res = await fetch(settings.proxyBase + '/search?q=' + encodeURIComponent(query), { signal: AbortSignal.timeout(10000) });
     if(!res.ok) return 'Ошибка поиска: ' + res.status;
     const data = await res.json();
-    const parts = [];
-    if(data.AbstractText) parts.push(data.AbstractText + (data.AbstractURL ? ' (' + data.AbstractURL + ')' : ''));
-    if(Array.isArray(data.RelatedTopics)){
-      for(const t of data.RelatedTopics.slice(0, 3)){
-        if(t.Text) parts.push(t.Text);
-      }
-    }
-    return parts.length ? parts.join('\n') : 'Ничего конкретного не найдено, ответь по своим знаниям.';
+    if(!data.results || !data.results.length) return 'Поиск не дал результатов, ответь по своим знаниям.';
+    return data.results.slice(0, 5).map((r, i) => (i + 1) + '. ' + r.title + '\n' + r.snippet + '\n' + r.url).join('\n\n');
   }catch(e){
     return 'Поиск недоступен: ' + e.message;
   }
@@ -598,6 +597,37 @@ function restoreReminders(){
   const now = Date.now();
   for(const r of list){ if(r.fireAt > now) scheduleReminder(r.text, r.fireAt); }
   localStorage.setItem('jarvis_reminders', JSON.stringify(list.filter(r => r.fireAt > now)));
+}
+
+async function callGetWeather(){
+  try{
+    const res = await fetch(settings.proxyBase + '/weather', { signal: AbortSignal.timeout(8000) });
+    if(!res.ok) return 'Ошибка получения погоды: ' + res.status;
+    const data = await res.json();
+    const curr = data.current || {};
+    const daily = data.daily || {};
+    const temps = daily.temperature_2m || [];
+    const codes = daily.weather_code || [];
+    const descr = {
+      0: 'ясно', 1: 'переменно облачно', 2: 'облачно', 3: 'пасмурно',
+      45: 'туман', 48: 'изморось',
+      51: 'морось', 53: 'морось', 55: 'сильная морось',
+      61: 'слабый дождь', 63: 'дождь', 65: 'сильный дождь',
+      71: 'слабый снег', 73: 'снег', 75: 'сильный снег',
+      80: 'ливень', 81: 'сильный ливень',
+      85: 'снежный шквал', 86: 'сильный снежный шквал',
+      95: 'гроза', 96: 'гроза с градом', 99: 'сильная гроза'
+    };
+    const code = codes[0] || 0;
+    const desc = descr[code] || 'неизвестная погода';
+    const temp = curr.temperature_2m ?? '?';
+    const minmax = (temps[0] !== undefined && temps[1] !== undefined) 
+      ? `, мин/макс ${temps[0]}°C/${temps[1]}°C` 
+      : '';
+    return `Сейчас в ${USER_PROFILE.city}: ${desc}, ${temp}°C${minmax}.`;
+  }catch(e){
+    return 'Не удалось получить погоду: ' + e.message;
+  }
 }
 
 // ---------- память между сессиями ----------
@@ -857,6 +887,7 @@ async function askGigaChat(userText){
       let result = 'Неизвестная функция: ' + name;
       if(name === 'web_search') result = await callWebSearch(args.query || '');
       else if(name === 'create_reminder') result = createReminder(args.text || '', Number(args.minutes_from_now) || 1);
+      else if(name === 'get_weather') result = await callGetWeather();
       messages.push(msg);
       messages.push({ role: 'function', name, content: result });
       continue;
