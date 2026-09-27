@@ -591,6 +591,23 @@ const statusLine = document.getElementById('statusLine');
 const statusLabel = document.getElementById('statusLabel');
 const ringWrap = document.getElementById('ringWrap');
 const ttsAudio = document.getElementById('ttsAudio');
+
+// ---------- разблокировка автовоспроизведения (Safari блокирует play(),
+// если он вызван не напрямую в момент тапа, а спустя время после fetch) ----------
+let audioUnlocked = false;
+function unlockAudio(){
+  if(audioUnlocked) return;
+  audioUnlocked = true;
+  try{
+    ttsAudio.muted = true;
+    const p = ttsAudio.play();
+    if(p && p.then){
+      p.then(() => { ttsAudio.pause(); ttsAudio.currentTime = 0; ttsAudio.muted = false; }).catch(() => { ttsAudio.muted = false; });
+    }
+  }catch(_){ ttsAudio.muted = false; }
+}
+document.addEventListener('touchend', unlockAudio, { once: true, passive: true });
+document.addEventListener('click', unlockAudio, { once: true });
 const voiceModeBtn = document.getElementById('voiceModeBtn');
 const voiceOverlay = document.getElementById('voiceOverlay');
 const voiceCloseBtn = document.getElementById('voiceCloseBtn');
@@ -1116,7 +1133,24 @@ async function askGigaChat(userText){
     return data.choices?.[0]?.message?.content ?? '(пустой ответ)';
   }
 
-  const messages = [{ role: 'system', content: await buildSystemPrompt() }, ...history];
+  // Принудительный поиск по ключевым словам — не ждём, пока модель сама
+  // решит, что ей нужны свежие данные (она это делает ненадёжно и может
+  // уверенно наврать из старых знаний). Если вопрос похож на "что сейчас
+  // происходит с X" — гуглим ДО первого запроса к модели, и она отвечает
+  // уже имея результаты перед глазами, без права выбора.
+  const FORCE_SEARCH_RE = /(что\s+(сейчас|там|случилось|происходит|нов\w*)|как\s+дела\s+у|новости\s+(про|о|за)|сменил\w*\s+(имя|фамили|название)|аресто\w+|задержа\w+|приговор|суд(ят|ебн|или)|умер\w*\s*ли|жив\w*\s+ли|актуальн\w+\s+(информац|данн)|последн\w+\s+(новост|информац)|вышел\s+ли|вышла\s+ли|результат\w*\s+матч|счёт\s+матч|отпустили\s+ли|освободили\s+ли)/i;
+
+  let messages;
+  if(FORCE_SEARCH_RE.test(userText) && settings.serperKey){
+    const searchResults = await callWebSearch(userText);
+    messages = [
+      { role: 'system', content: await buildSystemPrompt() },
+      ...history.slice(0, -1),
+      { role: 'user', content: userText + '\n\n[Результаты веб-поиска по этому вопросу — используй их и отвечай уверенно на их основе, не упоминай, что это результаты поиска, отвечай как будто просто знаешь]:\n' + searchResults }
+    ];
+  } else {
+    messages = [{ role: 'system', content: await buildSystemPrompt() }, ...history];
+  }
   let reply = await callChat(messages);
 
   const searchMatch = reply.trim().match(/^SEARCH:\s*(.+)$/i);
