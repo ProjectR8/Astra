@@ -608,6 +608,11 @@
         <input type="checkbox" id="ambientToggle">
         <label for="ambientToggle">Фоновый режим — слушать «Джарвис» постоянно (на этом устройстве)</label>
       </div>
+
+      <div class="field checkline">
+        <input type="checkbox" id="sfxToggle" checked>
+        <label for="sfxToggle">Звуковые эффекты (пиликанье HUD)</label>
+      </div>
     </div>
 
     <div class="modal-actions">
@@ -651,6 +656,7 @@ const serperKeyInput = document.getElementById('serperKey');
 const firebaseUrlInput = document.getElementById('firebaseUrl');
 const voiceOutCheck = document.getElementById('voiceOut');
 const ambientToggleCheck = document.getElementById('ambientToggle');
+const sfxToggleCheck = document.getElementById('sfxToggle');
 const ambientDot = document.getElementById('ambientDot');
 const genvoiceKeyInput = document.getElementById('genvoiceKey');
 const genvoiceVoiceIdInput = document.getElementById('genvoiceVoiceId');
@@ -674,9 +680,71 @@ function unlockAudio(){
       p.then(() => { ttsAudio.pause(); ttsAudio.currentTime = 0; ttsAudio.muted = false; }).catch(() => { ttsAudio.muted = false; });
     }
   }catch(_){ ttsAudio.muted = false; }
+  primeSfxContext();
 }
 document.addEventListener('touchend', unlockAudio, { once: true, passive: true });
 document.addEventListener('click', unlockAudio, { once: true });
+
+// ---------- HUD звуковые эффекты (синтезированные через Web Audio API,
+// без внешних файлов — короткие пиликанья в духе интерфейса из фильма) ----------
+let sfxCtx = null;
+function primeSfxContext(){
+  if(sfxCtx) return;
+  try{ sfxCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(_){}
+}
+function sfxEnabled(){
+  return sfxToggleCheck ? sfxToggleCheck.checked : true;
+}
+function tone(freq, startOffset, duration, opts){
+  opts = opts || {};
+  if(!sfxCtx) return;
+  const t0 = sfxCtx.currentTime + startOffset;
+  const osc = sfxCtx.createOscillator();
+  const gain = sfxCtx.createGain();
+  osc.type = opts.type || 'sine';
+  osc.frequency.setValueAtTime(freq, t0);
+  if(opts.toFreq){
+    osc.frequency.exponentialRampToValueAtTime(opts.toFreq, t0 + duration);
+  }
+  const vol = opts.vol !== undefined ? opts.vol : 0.12;
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain);
+  gain.connect(sfxCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.02);
+}
+function playSfx(name){
+  if(!sfxEnabled()) return;
+  primeSfxContext();
+  if(!sfxCtx) return;
+  if(sfxCtx.state === 'suspended') sfxCtx.resume().catch(()=>{});
+  switch(name){
+    case 'listen': // короткий восходящий блип — начали слушать
+      tone(560, 0, 0.09, { type: 'sine', toFreq: 880, vol: 0.11 });
+      break;
+    case 'send': // лёгкий щелчок отправки
+      tone(720, 0, 0.05, { type: 'triangle', vol: 0.09 });
+      break;
+    case 'think': // два тихих тика — обрабатываю
+      tone(420, 0, 0.045, { type: 'square', vol: 0.05 });
+      tone(420, 0.09, 0.045, { type: 'square', vol: 0.05 });
+      break;
+    case 'ready': // аккорд-подтверждение — ответ готов
+      tone(660, 0, 0.09, { type: 'sine', vol: 0.1 });
+      tone(990, 0.05, 0.12, { type: 'sine', vol: 0.09 });
+      break;
+    case 'wake': // мягкий чирп — сработало кодовое слово
+      tone(500, 0, 0.07, { type: 'sine', toFreq: 700, vol: 0.1 });
+      tone(700, 0.08, 0.07, { type: 'sine', toFreq: 950, vol: 0.08 });
+      break;
+    case 'error': // понижающийся "буз" — ошибка
+      tone(420, 0, 0.16, { type: 'sawtooth', toFreq: 220, vol: 0.09 });
+      break;
+  }
+}
+
 const voiceModeBtn = document.getElementById('voiceModeBtn');
 const voiceOverlay = document.getElementById('voiceOverlay');
 const voiceCloseBtn = document.getElementById('voiceCloseBtn');
@@ -938,6 +1006,7 @@ function loadSettings(){
   firebaseUrlInput.value = firebaseUrl;
   voiceOutCheck.checked = voiceOut;
   ambientToggleCheck.checked = localStorage.getItem('jarvis_ambient') === '1';
+  sfxToggleCheck.checked = localStorage.getItem('jarvis_sfx') !== '0';
   genvoiceKeyInput.value = genvoiceKey;
   genvoiceVoiceIdInput.value = genvoiceVoiceId;
   return { key, scope, proxyBase, serperKey, firebaseUrl, voiceOut, genvoiceKey, genvoiceVoiceId };
@@ -949,6 +1018,7 @@ function saveSettings(){
   localStorage.setItem('jarvis_serper_key', serperKeyInput.value.trim());
   localStorage.setItem('jarvis_firebase_url', firebaseUrlInput.value.trim().replace(/\/$/, ''));
   localStorage.setItem('jarvis_voice_out', voiceOutCheck.checked ? '1' : '0');
+  localStorage.setItem('jarvis_sfx', sfxToggleCheck.checked ? '1' : '0');
   localStorage.setItem('jarvis_genvoice_key', genvoiceKeyInput.value.trim());
   localStorage.setItem('jarvis_genvoice_voice_id', genvoiceVoiceIdInput.value.trim());
 }
@@ -1082,12 +1152,17 @@ if(!settings.key){ overlay.classList.add('open'); }
 let currentState = 'idle';
 let voiceModeActive = false;
 function setStatus(state, label){
+  const prevState = currentState;
   currentState = state;
   statusLabel.textContent = label;
   ringWrap.className = 'ring-wrap ' + state;
   if(voiceModeActive){
     voiceOrb.className = 'voice-orb ' + state;
     voiceStatus.textContent = label;
+  }
+  if(state !== prevState){
+    if(state === 'listening') playSfx('listen');
+    else if(state === 'thinking') playSfx('think');
   }
 }
 
@@ -1098,6 +1173,8 @@ function addMsg(role, text){
   div.textContent = text;
   feed.appendChild(div);
   feed.scrollTop = feed.scrollHeight;
+  if(role === 'assistant') playSfx('ready');
+  else if(role === 'error') playSfx('error');
   return div;
 }
 
@@ -1295,6 +1372,7 @@ async function handleSend(){
   textInput.value = '';
   autoSize();
   if(chips) chips.style.display = 'none';
+  playSfx('send');
   addMsg('user', text);
   setStatus('thinking', 'обработка');
 
@@ -1565,6 +1643,7 @@ function startAmbientListening(){
     const command = wakeMatch ? text.slice(wakeMatch[0].length).trim() : text;
     if(!command){ followUpUntil = now + FOLLOW_UP_MS; return; } // сказали только «Джарвис» — ждём продолжения
 
+    if(wakeMatch) playSfx('wake');
     ambientBusy = true;
     setAmbientDot('busy');
     addMsg('user', command);
