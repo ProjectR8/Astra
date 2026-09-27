@@ -379,6 +379,27 @@
     color:var(--ink-dim);
     opacity:.6;
   }
+
+  .ambient-dot{
+    position:fixed;
+    bottom:18px; left:18px;
+    width:10px; height:10px;
+    border-radius:50%;
+    background:var(--line);
+    z-index:15;
+    transition:background .3s, box-shadow .3s;
+  }
+  .ambient-dot.on{
+    background:var(--teal);
+    box-shadow:0 0 10px 2px rgba(79,139,139,0.6);
+    animation:ambientBreathe 2.4s ease-in-out infinite;
+  }
+  .ambient-dot.busy{
+    background:var(--brass);
+    box-shadow:0 0 10px 2px rgba(201,143,58,0.6);
+    animation:ambientBreathe .8s ease-in-out infinite;
+  }
+  @keyframes ambientBreathe{ 0%,100%{ opacity:.5; } 50%{ opacity:1; } }
 </style>
 </head>
 <body>
@@ -429,9 +450,24 @@
       <input type="text" id="proxyBase" placeholder="https://ваш-сервис.onrender.com">
     </div>
 
+    <div class="field">
+      <label for="serperKey">Serper.dev API key (для поиска)</label>
+      <input type="password" id="serperKey" placeholder="ключ с serper.dev">
+    </div>
+
+    <div class="field">
+      <label for="firebaseUrl">Firebase Realtime DB URL</label>
+      <input type="text" id="firebaseUrl" placeholder="https://проект-default-rtdb.firebaseio.com">
+    </div>
+
     <div class="field checkline">
       <input type="checkbox" id="voiceOut">
       <label for="voiceOut">Озвучивать ответы (GenVoice)</label>
+    </div>
+
+    <div class="field checkline">
+      <input type="checkbox" id="ambientToggle">
+      <label for="ambientToggle">Фоновый режим — слушать «Джарвис» постоянно (на этом устройстве)</label>
     </div>
 
     <div class="field">
@@ -462,6 +498,8 @@
 
 <audio id="ttsAudio" style="display:none;"></audio>
 
+<div class="ambient-dot" id="ambientDot" title="Фоновый режим"></div>
+
 <div class="voice-overlay" id="voiceOverlay">
   <button class="voice-close" id="voiceCloseBtn" aria-label="Закрыть голосовой режим">&#10005;</button>
   <div class="voice-orb idle" id="voiceOrb">
@@ -484,7 +522,11 @@ const cancelBtn = document.getElementById('cancelBtn');
 const authKeyInput = document.getElementById('authKey');
 const scopeSelect = document.getElementById('scope');
 const proxyBaseInput = document.getElementById('proxyBase');
+const serperKeyInput = document.getElementById('serperKey');
+const firebaseUrlInput = document.getElementById('firebaseUrl');
 const voiceOutCheck = document.getElementById('voiceOut');
+const ambientToggleCheck = document.getElementById('ambientToggle');
+const ambientDot = document.getElementById('ambientDot');
 const genvoiceKeyInput = document.getElementById('genvoiceKey');
 const genvoiceVoiceIdInput = document.getElementById('genvoiceVoiceId');
 const testVoiceBtn = document.getElementById('testVoiceBtn');
@@ -503,6 +545,49 @@ let history = [];
 let accessToken = null;
 let tokenExpiresAt = 0;
 
+// ---------- Firebase Realtime DB (общая память + датчики + команды на ПК) ----------
+function fbUrl(path){
+  return settings.firebaseUrl + '/' + path + '.json';
+}
+async function fbGet(path){
+  if(!settings.firebaseUrl) throw new Error('Firebase URL не задан');
+  const res = await fetch(fbUrl(path), { signal: AbortSignal.timeout(8000) });
+  if(!res.ok) throw new Error('Firebase GET ' + path + ': ' + res.status);
+  return res.json();
+}
+async function fbSet(path, value){
+  if(!settings.firebaseUrl) throw new Error('Firebase URL не задан');
+  const res = await fetch(fbUrl(path), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(value),
+    signal: AbortSignal.timeout(8000)
+  });
+  if(!res.ok) throw new Error('Firebase PUT ' + path + ': ' + res.status);
+  return res.json();
+}
+
+async function fetchSensorsSummary(){
+  if(!settings.firebaseUrl) return '';
+  try{
+    const data = await fbGet('jarvis/sensors');
+    if(!data) return '';
+    const parts = [];
+    if(data.temp !== undefined) parts.push('температура ' + data.temp + '°C');
+    if(data.humidity !== undefined) parts.push('влажность ' + data.humidity + '%');
+    if(data.gas !== undefined) parts.push('качество воздуха: ' + data.gas);
+    if(data.motion !== undefined) parts.push('движение: ' + (data.motion ? 'есть' : 'нет'));
+    if(data.light !== undefined) parts.push('освещённость: ' + data.light);
+    if(!parts.length) return '';
+    return 'Датчики дома сейчас (' + (data.ts ? new Date(data.ts).toLocaleTimeString('ru-RU') : 'время неизвестно') + '): ' + parts.join(', ') + '.';
+  }catch(_){ return ''; }
+}
+
+async function sendPcCommand(action){
+  const key = 'cmd_' + Date.now();
+  await fbSet('jarvis/pc_commands/' + key, { action, status: 'pending', ts: Date.now() });
+}
+
 // ---------- профиль пользователя (для персонализации ответов) ----------
 const USER_PROFILE = { name: 'Иван', birthDate: '2010-04-27', city: 'Оренбург' };
 
@@ -515,38 +600,72 @@ function getUserAge(){
   return age;
 }
 
-function buildSystemPrompt(){
+async function buildSystemPrompt(){
   const now = new Date();
   const dateStr = now.toLocaleDateString('ru-RU', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
   const timeStr = now.toLocaleTimeString('ru-RU', { hour:'2-digit', minute:'2-digit' });
-  return 'Ты Jarvis — лаконичный, слегка ироничный голосовой ассистент. Отвечай по-русски, коротко и по делу, если не попросили развёрнуто.\n' +
-    'Сейчас ' + dateStr + ', ' + timeStr + '.\n' +
-    'Пользователя зовут ' + USER_PROFILE.name + ' (' + getUserAge() + ' лет, город ' + USER_PROFILE.city + ').\n' +
-    'Если в сообщении есть результаты поиска в интернете — используй их в ответе.\n' +
-    'Если для точного ответа нужны свежие данные из интернета (новости, текущие события, факты, которые могли устареть) — не отвечай сразу, а напиши ровно одну строку: SEARCH: короткий поисковый запрос — и больше ничего. После этого тебе пришлют результаты, и ты дашь окончательный ответ.';
+  const sensors = await fetchSensorsSummary();
+
+  return [
+    'Ты Jarvis — персональный ИИ-дворецкий ' + USER_PROFILE.name + 'а, в духе Jarvis из фильмов про Железного человека.',
+    'Характер: собранный, слегка ироничный, безупречно вежливый, но не подобострастный. Обращайся к хозяину по имени или "сэр", когда уместно. Никогда не извиняйся избыточно и не виляй — говори прямо и по делу.',
+    'Формат речи: коротко и ясно по умолчанию. Разворачивай ответ только если попросили подробнее. Никаких списков и заголовков в устной речи — это голосовой ассистент.',
+    'Сейчас ' + dateStr + ', ' + timeStr + '. Пользователь: ' + USER_PROFILE.name + ', ' + getUserAge() + ' лет, город ' + USER_PROFILE.city + '.',
+    sensors || 'Датчики дома пока не подключены или молчат.',
+    '',
+    'Протоколы (используй как сценарии, если пользователь называет их или просит что-то похожее):',
+    '— "Доброе утро": кратко — время, погода (через SEARCH при необходимости), показания датчиков, есть ли активные напоминания.',
+    '— "Статус дома": показания всех датчиков одним связным предложением, отметь аномалии (слишком влажно, плохой воздух, обнаружено движение).',
+    '— "Отбой": подтверди, что напоминания на сегодня отработаны, предложи выключить свет через PC-команду или подсказать через реле (когда будет добавлено).',
+    '',
+    'Инструменты (используй маркер ОТДЕЛЬНОЙ строкой, больше ничего в этой строке не пиши — тебе пришлют результат и ты продолжишь):',
+    '— SEARCH: запрос — если для ответа нужны свежие данные из интернета (новости, курсы, факты, которые могли устареть).',
+    '— PC: действие — чтобы выполнить действие на компьютере хозяина. Доступные действия: lock, sleep, shutdown, mute, unmute, volume_up, volume_down, open:ИмяПриложения (только из тех, что хозяин уже прописал в списке разрешённых).',
+    'Не выдумывай других действий и не пытайся выполнить произвольные команды — только из списка выше.'
+  ].join('\n');
 }
 
 
 
 async function callWebSearch(query){
+  if(!settings.serperKey) return 'Поиск не настроен: не задан Serper API key в настройках.';
   try{
-    const res = await fetch(settings.proxyBase + '/search?q=' + encodeURIComponent(query), { signal: AbortSignal.timeout(10000) });
-    if(!res.ok) return 'Ошибка поиска: ' + res.status;
+    const res = await fetch(settings.proxyBase + '/search?q=' + encodeURIComponent(query), {
+      headers: { 'Authorization': 'Bearer ' + settings.serperKey },
+      signal: AbortSignal.timeout(10000)
+    });
+    if(!res.ok){
+      let detail = '';
+      try{ detail = await res.text(); }catch(_){}
+      return 'Ошибка поиска: ' + res.status + (detail ? ' — ' + detail.slice(0, 200) : '');
+    }
     const data = await res.json();
-    if(!data.results || !data.results.length) return 'Поиск не дал результатов, ответь по своим знаниям.';
-    return data.results.slice(0, 5).map((r, i) => (i + 1) + '. ' + r.title + '\n' + r.snippet + '\n' + r.url).join('\n\n');
+    const items = data.organic || [];
+    if(!items.length) return 'Поиск не дал результатов, ответь по своим знаниям.';
+    return items.slice(0, 5).map((r, i) => (i + 1) + '. ' + r.title + '\n' + (r.snippet || '') + '\n' + r.link).join('\n\n');
   }catch(e){
     return 'Поиск недоступен: ' + e.message;
   }
 }
 
-function createReminder(text, minutesFromNow){
+async function createReminder(text, minutesFromNow){
   const fireAt = Date.now() + minutesFromNow * 60000;
-  const reminders = JSON.parse(localStorage.getItem('jarvis_reminders') || '[]');
-  reminders.push({ text, fireAt });
-  localStorage.setItem('jarvis_reminders', JSON.stringify(reminders));
+  try{
+    let reminders = (await fbGet('jarvis/reminders').catch(() => null)) || [];
+    if(!Array.isArray(reminders)) reminders = [];
+    reminders.push({ text, fireAt });
+    await fbSet('jarvis/reminders', reminders);
+  }catch(_){}
   scheduleReminder(text, fireAt);
   return 'Напоминание создано: "' + text + '" через ' + minutesFromNow + ' мин.';
+}
+
+async function removeReminder(text, fireAt){
+  try{
+    let list = (await fbGet('jarvis/reminders').catch(() => null)) || [];
+    if(!Array.isArray(list)) list = [];
+    await fbSet('jarvis/reminders', list.filter(r => !(r.text === text && r.fireAt === fireAt)));
+  }catch(_){}
 }
 
 function scheduleReminder(text, fireAt){
@@ -558,17 +677,18 @@ function scheduleReminder(text, fireAt){
     if('Notification' in window && Notification.permission === 'granted'){
       new Notification('JARVIS напоминает', { body: text });
     }
-    const list = JSON.parse(localStorage.getItem('jarvis_reminders') || '[]')
-      .filter(r => !(r.text === text && r.fireAt === fireAt));
-    localStorage.setItem('jarvis_reminders', JSON.stringify(list));
+    removeReminder(text, fireAt);
   }, delay);
 }
 
-function restoreReminders(){
-  const list = JSON.parse(localStorage.getItem('jarvis_reminders') || '[]');
-  const now = Date.now();
-  for(const r of list){ if(r.fireAt > now) scheduleReminder(r.text, r.fireAt); }
-  localStorage.setItem('jarvis_reminders', JSON.stringify(list.filter(r => r.fireAt > now)));
+async function restoreReminders(){
+  try{
+    let list = (await fbGet('jarvis/reminders').catch(() => null)) || [];
+    if(!Array.isArray(list)) list = [];
+    const now = Date.now();
+    for(const r of list){ if(r.fireAt > now) scheduleReminder(r.text, r.fireAt); }
+    await fbSet('jarvis/reminders', list.filter(r => r.fireAt > now));
+  }catch(_){}
 }
 
 async function callGetWeather(){
@@ -602,13 +722,24 @@ async function callGetWeather(){
   }
 }
 
-// ---------- память между сессиями ----------
-function loadHistory(){
+// ---------- память между сессиями (Firebase — общая для всех устройств; localStorage — если Firebase не настроен) ----------
+async function loadHistory(){
+  if(settings.firebaseUrl){
+    try{
+      const data = await fbGet('jarvis/history');
+      history = Array.isArray(data) ? data : [];
+      return;
+    }catch(_){}
+  }
   try{ history = JSON.parse(localStorage.getItem('jarvis_history') || '[]'); }
   catch(_){ history = []; }
 }
-function saveHistory(){
-  try{ localStorage.setItem('jarvis_history', JSON.stringify(history.slice(-40))); }catch(_){}
+async function saveHistory(){
+  const trimmed = history.slice(-40);
+  if(settings.firebaseUrl){
+    try{ await fbSet('jarvis/history', trimmed); return; }catch(_){}
+  }
+  try{ localStorage.setItem('jarvis_history', JSON.stringify(trimmed)); }catch(_){}
 }
 function renderHistory(){
   for(const m of history){
@@ -621,28 +752,34 @@ function loadSettings(){
   const key = localStorage.getItem('jarvis_auth_key') || '';
   const scope = localStorage.getItem('jarvis_scope') || 'GIGACHAT_API_PERS';
   const proxyBase = localStorage.getItem('jarvis_proxy_base') || 'http://localhost:8787';
+  const serperKey = localStorage.getItem('jarvis_serper_key') || '';
+  const firebaseUrl = (localStorage.getItem('jarvis_firebase_url') || '').replace(/\/$/, '');
   const voiceOut = localStorage.getItem('jarvis_voice_out') === '1';
   const genvoiceKey = localStorage.getItem('jarvis_genvoice_key') || '';
   const genvoiceVoiceId = localStorage.getItem('jarvis_genvoice_voice_id') || '';
   authKeyInput.value = key;
   scopeSelect.value = scope;
   proxyBaseInput.value = proxyBase;
+  serperKeyInput.value = serperKey;
+  firebaseUrlInput.value = firebaseUrl;
   voiceOutCheck.checked = voiceOut;
+  ambientToggleCheck.checked = localStorage.getItem('jarvis_ambient') === '1';
   genvoiceKeyInput.value = genvoiceKey;
   genvoiceVoiceIdInput.value = genvoiceVoiceId;
-  return { key, scope, proxyBase, voiceOut, genvoiceKey, genvoiceVoiceId };
+  return { key, scope, proxyBase, serperKey, firebaseUrl, voiceOut, genvoiceKey, genvoiceVoiceId };
 }
 function saveSettings(){
   localStorage.setItem('jarvis_auth_key', authKeyInput.value.trim());
   localStorage.setItem('jarvis_scope', scopeSelect.value);
   localStorage.setItem('jarvis_proxy_base', proxyBaseInput.value.trim().replace(/\/$/, ''));
+  localStorage.setItem('jarvis_serper_key', serperKeyInput.value.trim());
+  localStorage.setItem('jarvis_firebase_url', firebaseUrlInput.value.trim().replace(/\/$/, ''));
   localStorage.setItem('jarvis_voice_out', voiceOutCheck.checked ? '1' : '0');
   localStorage.setItem('jarvis_genvoice_key', genvoiceKeyInput.value.trim());
   localStorage.setItem('jarvis_genvoice_voice_id', genvoiceVoiceIdInput.value.trim());
 }
 let settings = loadSettings();
-loadHistory();
-renderHistory();
+loadHistory().then(renderHistory);
 restoreReminders();
 if('Notification' in window && Notification.permission === 'default'){
   Notification.requestPermission();
@@ -833,22 +970,22 @@ async function askGigaChat(userText){
   // простые команды обрабатываем локально, не трогая GigaChat вообще
   const reminderMatch = userText.match(/напомни.*?через\s+(\d+)\s*(минут|мин)/i);
   if(reminderMatch){
-    const reply = createReminder(userText, Number(reminderMatch[1]));
+    const reply = await createReminder(userText, Number(reminderMatch[1]));
     history.push({ role: 'user', content: userText });
     history.push({ role: 'assistant', content: reply });
-    saveHistory();
+    await saveHistory();
     return reply;
   }
   if(/погод/i.test(userText)){
     const reply = await callGetWeather();
     history.push({ role: 'user', content: userText });
     history.push({ role: 'assistant', content: reply });
-    saveHistory();
+    await saveHistory();
     return reply;
   }
 
   history.push({ role: 'user', content: userText });
-  saveHistory();
+  await saveHistory();
 
   async function callChat(msgs){
     const res = await fetch(settings.proxyBase + '/chat', {
@@ -861,7 +998,7 @@ async function askGigaChat(userText){
     return data.choices?.[0]?.message?.content ?? '(пустой ответ)';
   }
 
-  const messages = [{ role: 'system', content: buildSystemPrompt() }, ...history];
+  const messages = [{ role: 'system', content: await buildSystemPrompt() }, ...history];
   let reply = await callChat(messages);
 
   const searchMatch = reply.match(/^SEARCH:\s*(.+)$/im);
@@ -873,9 +1010,20 @@ async function askGigaChat(userText){
     reply = await callChat(messages);
   }
 
+  const pcMatch = reply.match(/^PC:\s*(.+)$/im);
+  if(pcMatch){
+    const action = pcMatch[1].trim();
+    try{
+      await sendPcCommand(action);
+      reply = 'Выполняю на компьютере: ' + action + '.';
+    }catch(e){
+      reply = 'Не удалось отправить команду на ПК: ' + e.message;
+    }
+  }
+
   history.push({ role: 'assistant', content: reply });
   if(history.length > 40) history = history.slice(-40);
-  saveHistory();
+  await saveHistory();
   return reply;
 }
 
@@ -1049,6 +1197,104 @@ voiceOrb.onclick = () => {
     startVoiceListening();
   }
 };
+
+// ---------- фоновый режим: постоянно слушает кодовое слово «Джарвис» ----------
+// Кодовое слово — это и есть фильтр от шума/чужих разговоров: без него
+// пришлось бы гонять через GigaChat вообще всё, что звучит в комнате.
+// После срабатывания даём FOLLOW_UP_MS на уточнение без повтора слова.
+const WAKE_WORD_RE = /^\s*(джарвис|jarvis|дживс)[\s,]*/i;
+const FOLLOW_UP_MS = 8000;
+
+let ambientActive = false;
+let ambientRecognizer = null;
+let ambientBusy = false;
+let followUpUntil = 0;
+let wakeLock = null;
+
+async function requestWakeLock(){
+  try{ if('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }catch(_){}
+}
+function releaseWakeLock(){
+  if(wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+
+function setAmbientDot(state){
+  ambientDot.className = 'ambient-dot' + (state === 'off' ? '' : state === 'busy' ? ' busy' : ' on');
+}
+
+function toggleAmbientMode(enable){
+  ambientActive = enable;
+  localStorage.setItem('jarvis_ambient', enable ? '1' : '0');
+  if(enable) startAmbientListening();
+  else stopAmbientListening();
+}
+
+function stopAmbientListening(){
+  if(ambientRecognizer){ try{ ambientRecognizer.abort(); }catch(_){} }
+  releaseWakeLock();
+  setAmbientDot('off');
+}
+
+function startAmbientListening(){
+  if(!ambientActive) return;
+  if(!SpeechRecognition){
+    addMsg('error', 'Голосовой ввод не поддерживается этим браузером — фоновый режим недоступен.');
+    ambientActive = false;
+    return;
+  }
+  requestWakeLock();
+  ambientRecognizer = new SpeechRecognition();
+  ambientRecognizer.lang = 'ru-RU';
+  ambientRecognizer.continuous = false;
+  ambientRecognizer.interimResults = false;
+
+  ambientRecognizer.onresult = async (e) => {
+    const text = e.results[e.results.length - 1][0].transcript.trim();
+    const now = Date.now();
+    const inFollowUp = now < followUpUntil;
+    const wakeMatch = text.match(WAKE_WORD_RE);
+    if(!wakeMatch && !inFollowUp) return; // не по нашу душу — игнор
+
+    const command = wakeMatch ? text.slice(wakeMatch[0].length).trim() : text;
+    if(!command){ followUpUntil = now + FOLLOW_UP_MS; return; } // сказали только «Джарвис» — ждём продолжения
+
+    ambientBusy = true;
+    setAmbientDot('busy');
+    addMsg('user', command);
+    try{
+      const reply = await askGigaChat(command);
+      addMsg('assistant', reply);
+      await speak(reply);
+    }catch(err){
+      addMsg('error', err.message);
+    }
+    followUpUntil = Date.now() + FOLLOW_UP_MS;
+    ambientBusy = false;
+    if(ambientActive) setAmbientDot('on');
+  };
+
+  ambientRecognizer.onerror = (e) => {
+    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      addMsg('error', 'Доступ к микрофону запрещён — фоновый режим выключен.');
+      ambientToggleCheck.checked = false;
+      toggleAmbientMode(false);
+    }
+  };
+  ambientRecognizer.onend = () => {
+    if(ambientActive && !ambientBusy) startAmbientListening();
+  };
+
+  setAmbientDot(ambientBusy ? 'busy' : 'on');
+  try{ ambientRecognizer.start(); }catch(_){}
+}
+
+ambientToggleCheck.addEventListener('change', () => {
+  toggleAmbientMode(ambientToggleCheck.checked);
+});
+
+if(localStorage.getItem('jarvis_ambient') === '1'){
+  toggleAmbientMode(true);
+}
 
 // ---------- speech output: GenVoice TTS (with browser-voice fallback) ----------
 
