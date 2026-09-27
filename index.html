@@ -618,9 +618,14 @@ async function buildSystemPrompt(){
     '— "Статус дома": показания всех датчиков одним связным предложением, отметь аномалии (слишком влажно, плохой воздух, обнаружено движение).',
     '— "Отбой": подтверди, что напоминания на сегодня отработаны, предложи выключить свет через PC-команду или подсказать через реле (когда будет добавлено).',
     '',
-    'Инструменты (используй маркер ОТДЕЛЬНОЙ строкой, больше ничего в этой строке не пиши — тебе пришлют результат и ты продолжишь):',
-    '— SEARCH: запрос — если для ответа нужны свежие данные из интернета (новости, курсы, факты, которые могли устареть).',
-    '— PC: действие — чтобы выполнить действие на компьютере хозяина. Доступные действия: lock, sleep, shutdown, mute, unmute, volume_up, volume_down, open:ИмяПриложения (только из тех, что хозяин уже прописал в списке разрешённых).',
+    'ФОРМАТ ИНСТРУМЕНТОВ — читай внимательно, это критично:',
+    'Если для ответа нужны свежие данные из интернета — твой ОТВЕТ ЦЕЛИКОМ должен состоять РОВНО из одной строки вида "SEARCH: запрос" и больше ничего вообще: ни слова до, ни слова после, ни кавычек, ни пояснений на русском о том, что ты делаешь.',
+    'Если нужно выполнить действие на компьютере хозяина — твой ОТВЕТ ЦЕЛИКОМ должен состоять РОВНО из одной строки вида "PC: действие" (доступные действия: lock, sleep, shutdown, mute, unmute, volume_up, volume_down, open:ИмяПриложения) и больше ничего.',
+    'Пример правильного поведения:',
+    'Пользователь: "что нового в РФ?"',
+    'Твой ответ: SEARCH: новости России сегодня',
+    '(и всё — ни одного другого символа в ответе)',
+    'НИКОГДА не объясняй пользователю, что ты используешь SEARCH или PC, не упоминай слова "протокол", "внутренняя команда", "маркер" — пользователь не должен ничего об этом знать. Либо ты отвечаешь как обычно, либо строка-маркер и ничего больше — третьего не дано.',
     'Не выдумывай других действий и не пытайся выполнить произвольные команды — только из списка выше.'
   ].join('\n');
 }
@@ -691,9 +696,20 @@ async function restoreReminders(){
   }catch(_){}
 }
 
+// ---------- погода: кэш на 10 минут, чтобы не ловить 429 от Open-Meteo ----------
+let weatherCache = { data: null, ts: 0 };
+const WEATHER_CACHE_MS = 10 * 60 * 1000;
+
 async function callGetWeather(){
+  if(weatherCache.data && (Date.now() - weatherCache.ts) < WEATHER_CACHE_MS){
+    return weatherCache.data;
+  }
   try{
     const res = await fetch(settings.proxyBase + '/weather', { signal: AbortSignal.timeout(8000) });
+    if(res.status === 429){
+      if(weatherCache.data) return weatherCache.data + ' (данные немного устарели, сервис погоды сейчас ограничивает запросы)';
+      return 'Сервис погоды сейчас перегружен (слишком много запросов), попробуйте через пару минут.';
+    }
     if(!res.ok) return 'Ошибка получения погоды: ' + res.status;
     const data = await res.json();
     const curr = data.current || {};
@@ -716,8 +732,11 @@ async function callGetWeather(){
     const minmax = (temps[0] !== undefined && temps[1] !== undefined) 
       ? `, мин/макс ${temps[0]}°C/${temps[1]}°C` 
       : '';
-    return `Сейчас в ${USER_PROFILE.city}: ${desc}, ${temp}°C${minmax}.`;
+    const result = `Сейчас в ${USER_PROFILE.city}: ${desc}, ${temp}°C${minmax}.`;
+    weatherCache = { data: result, ts: Date.now() };
+    return result;
   }catch(e){
+    if(weatherCache.data) return weatherCache.data + ' (данные немного устарели)';
     return 'Не удалось получить погоду: ' + e.message;
   }
 }
@@ -740,6 +759,13 @@ async function saveHistory(){
     try{ await fbSet('jarvis/history', trimmed); return; }catch(_){}
   }
   try{ localStorage.setItem('jarvis_history', JSON.stringify(trimmed)); }catch(_){}
+}
+async function clearHistory(){
+  history = [];
+  if(settings.firebaseUrl){
+    try{ await fbSet('jarvis/history', []); }catch(_){}
+  }
+  try{ localStorage.removeItem('jarvis_history'); }catch(_){}
 }
 function renderHistory(){
   for(const m of history){
@@ -964,6 +990,19 @@ async function getAccessToken(){
   return accessToken;
 }
 
+// ---------- защита от "протокольного" бреда, если модель нарушила формат ----------
+const LEAK_PATTERNS = [
+  /внутренн(яя|юю|ей|ие)\s+команд/i,
+  /протокол[а-я]*\s+(для|раздел|команд)/i,
+  /раздел(яю|ение|ить)\s+(мои\s+запрос|технич)/i,
+  /не\s+обращай\s+внимания/i,
+  /отдел(яю|яй|ение)\s+(техническ|команд|плез)/i,
+  /^\s*(SEARCH|PC)\s*:/i
+];
+function looksLikeLeak(text){
+  return LEAK_PATTERNS.some(re => re.test(text));
+}
+
 async function askGigaChat(userText){
   const token = await getAccessToken();
 
@@ -1001,16 +1040,16 @@ async function askGigaChat(userText){
   const messages = [{ role: 'system', content: await buildSystemPrompt() }, ...history];
   let reply = await callChat(messages);
 
-  const searchMatch = reply.match(/^SEARCH:\s*(.+)$/im);
+  const searchMatch = reply.trim().match(/^SEARCH:\s*(.+)$/i);
   if(searchMatch){
     const query = searchMatch[1].trim();
     const searchResults = await callWebSearch(query);
     messages.push({ role: 'assistant', content: reply });
-    messages.push({ role: 'user', content: 'Результаты поиска по запросу "' + query + '":\n' + searchResults + '\n\nОтветь на мой предыдущий вопрос, используя эти данные.' });
+    messages.push({ role: 'user', content: 'Результаты поиска по запросу "' + query + '":\n' + searchResults + '\n\nОтветь на мой предыдущий вопрос по существу, обычным текстом, без маркеров.' });
     reply = await callChat(messages);
   }
 
-  const pcMatch = reply.match(/^PC:\s*(.+)$/im);
+  const pcMatch = reply.trim().match(/^PC:\s*(.+)$/i);
   if(pcMatch){
     const action = pcMatch[1].trim();
     try{
@@ -1018,6 +1057,18 @@ async function askGigaChat(userText){
       reply = 'Выполняю на компьютере: ' + action + '.';
     }catch(e){
       reply = 'Не удалось отправить команду на ПК: ' + e.message;
+    }
+  }
+
+  // защитный фильтр: если модель всё-таки проговорилась о "протоколе" вместо
+  // чистого маркера — не показываем это пользователю, просим модель
+  // переформулировать нормальным ответом.
+  if(looksLikeLeak(reply)){
+    messages.push({ role: 'assistant', content: reply });
+    messages.push({ role: 'user', content: 'Это была служебная ошибка формата, пользователь её не видел. Ответь ещё раз — обычным человеческим текстом, без упоминания инструментов, команд или протоколов.' });
+    reply = await callChat(messages);
+    if(looksLikeLeak(reply)){
+      reply = 'Прошу прощения, что-то заклинило. Повторите вопрос, пожалуйста.';
     }
   }
 
@@ -1199,9 +1250,6 @@ voiceOrb.onclick = () => {
 };
 
 // ---------- фоновый режим: постоянно слушает кодовое слово «Джарвис» ----------
-// Кодовое слово — это и есть фильтр от шума/чужих разговоров: без него
-// пришлось бы гонять через GigaChat вообще всё, что звучит в комнате.
-// После срабатывания даём FOLLOW_UP_MS на уточнение без повтора слова.
 const WAKE_WORD_RE = /^\s*(джарвис|jarvis|дживс)[\s,]*/i;
 const FOLLOW_UP_MS = 8000;
 
@@ -1297,15 +1345,6 @@ if(localStorage.getItem('jarvis_ambient') === '1'){
 }
 
 // ---------- speech output: GenVoice TTS (with browser-voice fallback) ----------
-
-// Раньше эта функция вообще не трогала GenVoice и всегда использовала
-// системный голос браузера (поэтому звучала "Милена", а не настроенный
-// голос GenVoice). Теперь: если в настройках есть ключ GenVoice и voice_id —
-// запрос идёт через прокси (proxyBase + '/tts', см. gigachat-proxy.js),
-// который пробрасывает его на api.genvoice.ru и обходит CORS. Возвращённый
-// mp3 проигрывается через <audio>. Если ключа нет — откатываемся на
-// встроенный синтез речи браузера.
-
 async function speak(text){
   if(settings.genvoiceKey && settings.genvoiceVoiceId){
     return speakGenVoice(text);
