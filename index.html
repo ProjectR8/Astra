@@ -49,7 +49,22 @@
     border-bottom:1px solid var(--line);
     position:relative;
     z-index:2;
+    overflow:hidden;
   }
+  /* тонкий вращающийся сектор-развёртка на фоне шапки — чисто декоративно */
+  header::before{
+    content:'';
+    position:absolute;
+    top:50%; left:50%;
+    width:340px; height:340px;
+    margin:-170px 0 0 -170px;
+    background:conic-gradient(from 0deg, transparent 0deg, rgba(201,143,58,0.09) 8deg, transparent 22deg, transparent 360deg);
+    animation:radarSpin 7s linear infinite;
+    pointer-events:none;
+    z-index:0;
+  }
+  @keyframes radarSpin{ 100%{ transform:rotate(360deg); } }
+  header > *{ position:relative; z-index:1; }
   h1{
     font-family:'JetBrains Mono', monospace;
     font-weight:500;
@@ -65,6 +80,18 @@
     width:92px; height:92px;
     display:flex; align-items:center; justify-content:center;
   }
+  .ring-wrap::before{
+    content:'';
+    position:absolute;
+    inset:-30px;
+    border-radius:50%;
+    background:radial-gradient(circle, rgba(201,143,58,0.16) 0%, transparent 70%);
+    animation:reactorPulse 3.2s ease-in-out infinite;
+    z-index:-1;
+  }
+  .ring-wrap.listening::before{ background:radial-gradient(circle, rgba(79,139,139,0.2) 0%, transparent 70%); animation-duration:1.6s; }
+  .ring-wrap.thinking::before, .ring-wrap.speaking::before{ animation-duration:1s; }
+  @keyframes reactorPulse{ 0%,100%{ opacity:.5; transform:scale(0.9); } 50%{ opacity:1; transform:scale(1.08); } }
   .ring-wrap svg{ width:100%; height:100%; transform:rotate(-90deg); transform-origin:50% 50%; }
   .ring-ticks{ stroke:var(--line); stroke-width:0.7; opacity:0.7; }
   .ring-track{ fill:none; stroke:var(--line); stroke-width:1.8; }
@@ -149,6 +176,8 @@
     color:var(--ink);
     border-radius:10px;
     border-top-left-radius:2px;
+    clip-path:polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+    position:relative;
   }
   .msg.system{
     align-self:center;
@@ -238,6 +267,7 @@
     cursor:pointer;
     flex-shrink:0;
     transition:border-color .2s, color .2s, background .2s;
+    clip-path:polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
   }
   button.icon-btn:hover{ border-color:var(--brass-dim); color:var(--brass); }
   button.icon-btn.active{ border-color:var(--teal); color:var(--teal); background:#1a2626; }
@@ -467,9 +497,58 @@
     animation:ambientBreathe .8s ease-in-out infinite;
   }
   @keyframes ambientBreathe{ 0%,100%{ opacity:.5; } 50%{ opacity:1; } }
+
+  /* ---- boot sequence ---- */
+  .boot-overlay{
+    position:fixed; inset:0;
+    background:var(--bg);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:14px;
+    z-index:100;
+    cursor:pointer;
+    transition:opacity .5s ease;
+  }
+  .boot-overlay.hidden{ opacity:0; pointer-events:none; }
+  .boot-ring{
+    width:70px; height:70px;
+    border-radius:50%;
+    border:1.5px solid var(--line);
+    border-top-color:var(--brass);
+    animation:bootSpin 0.9s linear infinite;
+  }
+  @keyframes bootSpin{ 100%{ transform:rotate(360deg); } }
+  .boot-text{
+    font-family:'JetBrains Mono', monospace;
+    font-size:12px;
+    letter-spacing:3px;
+    color:var(--brass-dim);
+    text-transform:uppercase;
+    min-height:16px;
+  }
+  .boot-text .cursor{ animation:cursorBlink 0.8s step-end infinite; }
+  @keyframes cursorBlink{ 50%{ opacity:0; } }
+
+  /* ---- typewriter reveal for assistant replies ---- */
+  .msg.assistant .caret{
+    display:inline-block;
+    width:6px; height:1em;
+    background:var(--brass);
+    margin-left:1px;
+    vertical-align:text-bottom;
+    animation:cursorBlink 0.7s step-end infinite;
+  }
 </style>
 </head>
 <body>
+
+<div class="boot-overlay" id="bootOverlay">
+  <div class="boot-ring"></div>
+  <div class="boot-text" id="bootText"><span class="cursor">_</span></div>
+</div>
+
 
 <header>
   <button class="gear voice-toggle" id="voiceModeBtn" title="Голосовой режим" aria-label="Голосовой режим">
@@ -641,6 +720,40 @@
 </div>
 
 <script>
+// ---------- boot sequence ("JARVIS ONLINE") ----------
+(function bootSequence(){
+  const overlay = document.getElementById('bootOverlay');
+  const textEl = document.getElementById('bootText');
+  const lines = ['ИНИЦИАЛИЗАЦИЯ...', 'JARVIS ОНЛАЙН'];
+  let li = 0, ci = 0;
+  let dismissed = false;
+
+  function dismiss(){
+    if(dismissed) return;
+    dismissed = true;
+    overlay.classList.add('hidden');
+    setTimeout(() => overlay.remove(), 550);
+  }
+  overlay.addEventListener('click', dismiss);
+  overlay.addEventListener('touchstart', dismiss, { passive: true });
+
+  function typeStep(){
+    if(dismissed) return;
+    if(li >= lines.length){ setTimeout(dismiss, 500); return; }
+    const line = lines[li];
+    if(ci <= line.length){
+      textEl.innerHTML = line.slice(0, ci) + '<span class="cursor">_</span>';
+      ci++;
+      setTimeout(typeStep, 28);
+    } else {
+      li++; ci = 0;
+      setTimeout(typeStep, 220);
+    }
+  }
+  typeStep();
+  setTimeout(dismiss, 3500); // страховка, чтобы не залипнуть
+})();
+
 const feed = document.getElementById('feed');
 const textInput = document.getElementById('textInput');
 const sendBtn = document.getElementById('sendBtn');
@@ -1167,15 +1280,50 @@ function setStatus(state, label){
 }
 
 // ---------- chat feed ----------
-function addMsg(role, text){
+function addMsg(role, text, animate){
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.textContent = text;
   feed.appendChild(div);
-  feed.scrollTop = feed.scrollHeight;
+
   if(role === 'assistant') playSfx('ready');
   else if(role === 'error') playSfx('error');
+
+  if(role === 'assistant' && animate){
+    typewriteInto(div, text);
+  } else {
+    div.textContent = text;
+  }
+  feed.scrollTop = feed.scrollHeight;
   return div;
+}
+
+function typewriteInto(div, text){
+  let i = 0;
+  let finished = false;
+  const speed = 10; // мс на символ
+  div.textContent = '';
+  const caret = document.createElement('span');
+  caret.className = 'caret';
+  div.appendChild(caret);
+
+  function finish(){
+    if(finished) return;
+    finished = true;
+    div.textContent = text;
+    feed.scrollTop = feed.scrollHeight;
+  }
+  div.addEventListener('click', finish, { once: true }); // тап — досказать сразу
+
+  function step(){
+    if(finished) return;
+    i++;
+    div.textContent = text.slice(0, i);
+    div.appendChild(caret);
+    if(i % 3 === 0) feed.scrollTop = feed.scrollHeight;
+    if(i < text.length) setTimeout(step, speed);
+    else finish();
+  }
+  step();
 }
 
 // ---------- стартовые чипы ----------
@@ -1378,7 +1526,7 @@ async function handleSend(){
 
   try{
     const reply = await askGigaChat(text);
-    addMsg('assistant', reply);
+    addMsg('assistant', reply, true);
     if(settings.voiceOut){
       await speak(reply);
     } else {
@@ -1548,7 +1696,7 @@ function startVoiceListening(){
     setStatus('thinking', 'обработка');
     try{
       const reply = await askGigaChat(text);
-      addMsg('assistant', reply);
+      addMsg('assistant', reply, true);
       voiceTranscript.textContent = reply;
       await speak(reply);
     }catch(err){
@@ -1649,7 +1797,7 @@ function startAmbientListening(){
     addMsg('user', command);
     try{
       const reply = await askGigaChat(command);
-      addMsg('assistant', reply);
+      addMsg('assistant', reply, true);
       await speak(reply);
     }catch(err){
       addMsg('error', err.message);
